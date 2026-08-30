@@ -52,7 +52,8 @@ contract TxOriginTest is Test {
     address payable attackerEOA = payable(makeAddr("attacker"));
 
     function setUp() public {
-        vm.deal(owner, 10 ether);
+        // Both vaults are funded with 10 ETH each during deployment.
+        vm.deal(owner, 20 ether);
 
         vm.startPrank(owner);
         vulnerable = new VulnerableAccess{value: 10 ether}();
@@ -67,7 +68,9 @@ contract TxOriginTest is Test {
         uint256 before = attackerEOA.balance;
 
         // Owner is tricked into calling the attacker contract.
-        vm.startPrank(owner);
+        // Two-argument prank: sets both msg.sender AND tx.origin to the owner,
+        // matching a real EOA-initiated transaction.
+        vm.startPrank(owner, owner);
         attacker.proxyWithdrawVulnerable(vulnerable, attackerEOA, 10 ether);
         vm.stopPrank();
 
@@ -77,7 +80,8 @@ contract TxOriginTest is Test {
 
     /// @notice Regression: the same path against SafeAccess must revert.
     function testCannotExploitSafeAccess() public {
-        vm.startPrank(owner);
+        // The vault checks tx.origin, so the prank must set it too.
+        vm.startPrank(owner, owner);
         vm.expectRevert("not owner");
         attacker.proxyWithdrawSafe(safe, attackerEOA, 10 ether);
         vm.stopPrank();
