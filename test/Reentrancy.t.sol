@@ -89,8 +89,15 @@ contract ReentrancyTest is Test {
 
     /// @notice Regression: SafeVault rejects re-entry.
     function testSafeVaultRejectsReentry() public {
+        // setUp spent the dealt 2 ETH on the vulnerable-vault deposits.
+        vm.deal(address(this), 2 ether);
+
         ReentrancyAttacker safeAttacker = new ReentrancyAttacker(IVault(address(safe)));
         safeAttacker.seed{value: 1 ether}();
+
+        // A second (victim) deposit keeps the safe vault funded, so the
+        // attacker's re-entry attempt actually reaches the balance check.
+        safe.deposit{value: 1 ether}();
 
         vm.expectRevert();
         safeAttacker.attack(1 ether);
