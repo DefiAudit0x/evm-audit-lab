@@ -20,7 +20,7 @@ contract SafeVault {
         // Checks-effects-interactions: restore the accounting invariant first.
         balances[msg.sender] -= amount;
 
-        (bool ok, ) = msg.sender.call{value: amount}("");
+        (bool ok,) = msg.sender.call{value: amount}("");
         require(ok, "transfer failed");
     }
 
