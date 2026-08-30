@@ -65,6 +65,11 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 │   ├── TxOrigin.t.sol             # Lab 02
 │   ├── FlashLoan.t.sol            # Lab 03
 │   └── StaleOracle.t.sol          # Lab 04
+├── labs/                          # per-lab deep-dive write-ups
+│   ├── lab-01-reentrancy/         # Lab 01 README (sources live in src/ and test/)
+│   ├── lab-02-tx-origin/          # Lab 02 README + self-contained src/test copy
+│   ├── lab-03-flash-loan/         # Lab 03 README + self-contained src/test copy
+│   └── lab-04-oracle-manipulation/ # Lab 04 README + self-contained src/test copy
 ├── .github/workflows/
 │   └── test.yml                   # Foundry test + formatting CI
 ├── foundry.toml                   # project configuration
