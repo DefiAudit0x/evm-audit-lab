@@ -104,10 +104,10 @@ Tool output (Slither, Foundry fuzz) is treated as a **lead for manual verificati
 | Milestone | Target | Status |
 | --- | --- | --- |
 | 4 core labs | Reentrancy, tx.origin, Flash Loan, Stale Oracle | ✅ Done |
-| 6 additional labs | Precision, MEV, Proxy, Signatures, ACL, Low-level calls | 📋 2026 Q1 |
+| 6 additional labs | Precision, MEV, Proxy, Signatures, ACL, Low-level calls | 📋 2026 Q4 |
 | Slither integration | Add Slither to CI with custom detectors | 🚧 In progress |
-| Invariant fuzzing | Echidna / `forge invariant` for each lab | 📋 2026 Q1 |
-| Blog writeups | Each lab paired with a public write-up | 📋 2026 Q2 |
+| Invariant fuzzing | Echidna / `forge invariant` for each lab | 📋 2026 Q4 |
+| Blog writeups | Each lab paired with a public write-up | 📋 2027 Q1 |
 
 ## Contributing
 
