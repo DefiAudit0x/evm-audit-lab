@@ -21,9 +21,7 @@ contract SafeSwap {
     constructor(uint256 reserveA_, uint256 reserveB_) {
         reserveA = reserveA_;
         reserveB = reserveB_;
-        observations.push(
-            Observation({price: (reserveB * 1e18) / reserveA, timestamp: uint32(block.timestamp)})
-        );
+        observations.push(Observation({price: (reserveB * 1e18) / reserveA, timestamp: uint32(block.timestamp)}));
     }
 
     function swap(uint256 amountIn) external {
@@ -49,9 +47,7 @@ contract SafeSwap {
 
     function _updateObservation() internal {
         if (block.timestamp >= observations[observations.length - 1].timestamp + PERIOD) {
-            observations.push(
-                Observation({price: (reserveB * 1e18) / reserveA, timestamp: uint32(block.timestamp)})
-            );
+            observations.push(Observation({price: (reserveB * 1e18) / reserveA, timestamp: uint32(block.timestamp)}));
         }
     }
 }
