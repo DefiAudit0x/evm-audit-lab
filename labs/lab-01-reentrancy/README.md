@@ -34,10 +34,10 @@ vault.withdraw(1 ETH)
        │                                                    ├─ require(balances[attacker] >= 1) ✅ (not yet debited!)
        │                                                    └─ msg.sender.call{value: 1 ETH}()
        │
-       └─ balances[attacker] -= 1 ETH       (only debited ONCE, after both sends)
+       └─ balances[attacker] = 0             (zeroed once, after both sends)
 ```
 
-Result: attacker drains 2 ETH, balance only debited by 1.
+Result: attacker drains 2 ETH from a 2 ETH vault with a single 1 ETH deposit.
 
 ## Minimal reproduction
 
