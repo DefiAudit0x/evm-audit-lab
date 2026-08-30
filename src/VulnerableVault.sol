@@ -17,10 +17,13 @@ contract VulnerableVault {
         require(balances[msg.sender] >= amount, "insufficient balance");
 
         // Vulnerability: control is transferred before accounting is updated.
-        (bool ok, ) = msg.sender.call{value: amount}("");
+        (bool ok,) = msg.sender.call{value: amount}("");
         require(ok, "transfer failed");
 
-        balances[msg.sender] -= amount;
+        // DAO-style reset: the stale, still-undebited balance keeps passing
+        // the require check across re-entrant calls, so the vault sends more
+        // ETH than the caller is owed while the bookkeeping looks intact.
+        balances[msg.sender] = 0;
     }
 
     receive() external payable {}
