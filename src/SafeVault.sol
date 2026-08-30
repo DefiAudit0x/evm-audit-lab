@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @notice Minimal fixed educational example.
+/// @title SafeVault
+/// @notice Lab 01 — Remediated: applies checks-effects-interactions.
+/// @dev The balance is decremented BEFORE the external call. A malicious
+///      receiver that tries to re-enter withdraw() will fail the balance
+///      check on the second call.
 contract SafeVault {
     mapping(address => uint256) public balances;
 

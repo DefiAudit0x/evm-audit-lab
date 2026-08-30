@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @notice Intentionally vulnerable educational example. Do not deploy.
+/// @title VulnerableVault
+/// @notice Lab 01 — Intentionally vulnerable educational example.
+/// @dev DO NOT DEPLOY. The withdraw function sends ETH before updating
+///      accounting, allowing a malicious receiver to re-enter.
 contract VulnerableVault {
     mapping(address => uint256) public balances;
 
