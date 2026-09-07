@@ -43,9 +43,9 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 | 05 | [Integer Precision Loss](./test/Precision.t.sol) | Rounding & precision attacks (EIP-4626 inflation) | ✅ |
 | 06 | [Sandwich / MEV Front-running](./test/Sandwich.t.sol) | Mempool exploitation | ✅ |
 | 07 | [Upgradeable Proxy Storage Collision](./test/ProxyCollision.t.sol) | EIP-1967 vs hand-rolled proxy slots | ✅ |
-| 08 | `_planned_` — Signature Replay | EIP-712 nonce reuse | 📋 |
-| 09 | `_planned_` — Privileged Mint via Access Control | Role-based access flaws | 📋 |
-| 10 | `_planned_` — Unchecked Return Value (Low-level call) | Silent failures | 📋 |
+| 08 | [Signature Replay](./test/SignatureReplay.t.sol) | Missing nonce/deadline/domain binding on signed payouts | ✅ |
+| 09 | [Privileged Mint](./test/PrivilegedMint.t.sol) | Unprotected supply creation on a backed token | ✅ |
+| 10 | [Unchecked Return Value](./test/UncheckedReturn.t.sol) | Discarded `bool` from `transfer` / low-level `call` | ✅ |
 
 ## Repository structure
 
@@ -65,7 +65,13 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 │   ├── VulnerableAmm.sol          # Lab 06 — vulnerable
 │   ├── SafeAmm.sol                # Lab 06 — remediated
 │   ├── VulnerableProxy.sol        # Lab 07 — vulnerable
-│   └── SafeProxy.sol              # Lab 07 — remediated
+│   ├── SafeProxy.sol              # Lab 07 — remediated
+│   ├── VulnerableSignature.sol    # Lab 08 — vulnerable
+│   ├── SafeSignature.sol          # Lab 08 — remediated
+│   ├── VulnerableMint.sol         # Lab 09 — vulnerable
+│   ├── SafeMint.sol               # Lab 09 — remediated
+│   ├── VulnerableRouter.sol       # Lab 10 — vulnerable
+│   └── SafeRouter.sol             # Lab 10 — remediated
 ├── test/
 │   ├── Reentrancy.t.sol           # Lab 01
 │   ├── TxOrigin.t.sol             # Lab 02
@@ -73,7 +79,10 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 │   ├── StaleOracle.t.sol          # Lab 04
 │   ├── Precision.t.sol            # Lab 05
 │   ├── Sandwich.t.sol             # Lab 06
-│   └── ProxyCollision.t.sol       # Lab 07
+│   ├── ProxyCollision.t.sol       # Lab 07
+│   ├── SignatureReplay.t.sol      # Lab 08
+│   ├── PrivilegedMint.t.sol       # Lab 09
+│   └── UncheckedReturn.t.sol      # Lab 10
 ├── labs/                          # per-lab deep-dive write-ups
 │   ├── lab-01-reentrancy/         # Lab 01 README (sources live in src/ and test/)
 │   ├── lab-02-tx-origin/          # Lab 02 README + self-contained src/test copy
@@ -81,7 +90,10 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 │   ├── lab-04-oracle-manipulation/ # Lab 04 README + self-contained src/test copy
 │   ├── lab-05-integer-precision-loss/ # Lab 05 README + self-contained src/test copy
 │   ├── lab-06-sandwich-mev/       # Lab 06 README + self-contained src/test copy
-│   └── lab-07-proxy-storage-collision/ # Lab 07 README + self-contained src/test copy
+│   ├── lab-07-proxy-storage-collision/ # Lab 07 README + self-contained src/test copy
+│   ├── lab-08-signature-replay/   # Lab 08 README + self-contained src/test copy
+│   ├── lab-09-privileged-mint/    # Lab 09 README + self-contained src/test copy
+│   └── lab-10-unchecked-return-value/ # Lab 10 README + self-contained src/test copy
 ├── .github/workflows/
 │   └── test.yml                   # Foundry test + formatting CI
 ├── foundry.toml                   # project configuration
@@ -116,7 +128,7 @@ Tool output (Slither, Foundry fuzz) is treated as a **lead for manual verificati
 | Milestone | Target | Status |
 | --- | --- | --- |
 | 4 core labs | Reentrancy, tx.origin, Flash Loan, Stale Oracle | ✅ Done |
-| 6 additional labs | Precision, MEV, Proxy, Signatures, ACL, Low-level calls | 🚧 3/6 done (Precision, Sandwich, Proxy) |
+| 6 additional labs | Precision, MEV, Proxy, Signatures, ACL, Low-level calls | ✅ Done |
 | Slither integration | Add Slither to CI with custom detectors | 🚧 In progress |
 | Invariant fuzzing | Echidna / `forge invariant` for each lab | 📋 2026 Q4 |
 | Blog writeups | Each lab paired with a public write-up | 📋 2027 Q1 |
