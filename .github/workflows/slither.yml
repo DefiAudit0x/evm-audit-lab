@@ -1,0 +1,32 @@
+name: Slither analysis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install Slither (pinned)
+        run: pipx install "slither-analyzer==0.11.6"
+
+      - name: Run Slither
+        # Slither exits 255 whenever any finding exists — always true here,
+        # because half of the repository is intentionally vulnerable. The
+        # JSON report is what the next step judges.
+        run: slither . --json slither-report.json || true
+
+      - name: Check expectations (lab integrity + safe regression + triage)
+        run: python3 .github/scripts/check_slither.py slither-report.json
