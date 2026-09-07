@@ -5,6 +5,7 @@
 **Reproducible Solidity security laboratories — vulnerable vs. remediated, side by side.**
 
 [![CI](https://github.com/DefiAudit0x/evm-audit-lab/actions/workflows/test.yml/badge.svg)](../../actions/workflows/test.yml)
+[![Slither](https://github.com/DefiAudit0x/evm-audit-lab/actions/workflows/slither.yml/badge.svg)](../../actions/workflows/slither.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-181717?style=flat-square)](LICENSE)
 [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-FF8C42?style=flat-square)](https://getfoundry.sh)
 [![Solidity](https://img.shields.io/badge/Solidity-^0.8.24-363636?style=flat-square&logo=solidity&logoColor=white)](https://soliditylang.org)
@@ -94,8 +95,13 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 │   ├── lab-08-signature-replay/   # Lab 08 README + self-contained src/test copy
 │   ├── lab-09-privileged-mint/    # Lab 09 README + self-contained src/test copy
 │   └── lab-10-unchecked-return-value/ # Lab 10 README + self-contained src/test copy
-├── .github/workflows/
-│   └── test.yml                   # Foundry test + formatting CI
+├── .github/
+│   ├── workflows/
+│   │   ├── test.yml               # Foundry test + formatting CI
+│   │   └── slither.yml            # Slither static analysis CI
+│   └── scripts/
+│       └── check_slither.py       # expectations gate over the Slither JSON report
+├── slither.config.json            # Slither scope (excludes lib/, labs/, test/)
 ├── foundry.toml                   # project configuration
 ├── SECURITY.md
 ├── CONTRIBUTING.md
@@ -116,6 +122,16 @@ Each lab contains the following five sections, encoded in the test file's docstr
 
 Tool output (Slither, Foundry fuzz) is treated as a **lead for manual verification** rather than a replacement for protocol reasoning.
 
+### Static analysis in CI
+
+A second workflow (`.github/workflows/slither.yml`) runs Slither on every push and enforces three rules encoded in `.github/scripts/check_slither.py`:
+
+1. **Lab integrity** — the detector for each gateable lab's core class must fire on its `Vulnerable*` contract (reentrancy-eth, tx-origin + arbitrary-send-eth, unchecked-transfer). If the lab stops teaching what the tool actually flags, CI fails.
+2. **Safe regression** — the same detector must stay silent on the `Safe*` counterpart, so a refactor cannot reintroduce the lab's bug unnoticed.
+3. **Written triage** — any remaining High/Medium finding on a `Safe*` contract needs an explicit allowlist entry with a reason (scope separation: a Safe contract is remediated for *its* lab's class, not every class).
+
+Vulnerability classes static analysis cannot see (flash-loan and stale-oracle manipulation, rounding inflation, storage-collision layout, signature replay, missing access control) are deliberately **not gated** — they are listed in the CI output as the boundary between tooling and manual reasoning.
+
 ## Responsible use
 
 - Use these examples only in local Foundry test environments.
@@ -129,7 +145,7 @@ Tool output (Slither, Foundry fuzz) is treated as a **lead for manual verificati
 | --- | --- | --- |
 | 4 core labs | Reentrancy, tx.origin, Flash Loan, Stale Oracle | ✅ Done |
 | 6 additional labs | Precision, MEV, Proxy, Signatures, ACL, Low-level calls | ✅ Done |
-| Slither integration | Add Slither to CI with custom detectors | 🚧 In progress |
+| Slither integration | CI with detection assertions, safe-regression gate and written triage | ✅ Done |
 | Invariant fuzzing | Echidna / `forge invariant` for each lab | 📋 2026 Q4 |
 | Blog writeups | Each lab paired with a public write-up | 📋 2027 Q1 |
 
