@@ -40,9 +40,9 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 | 02 | [tx.origin Authorization](./test/TxOrigin.t.sol) | Access control via `tx.origin` | ✅ |
 | 03 | [Flash Loan Price Manipulation](./test/FlashLoan.t.sol) | Oracle manipulation via single-block borrow | ✅ |
 | 04 | [Stale Oracle](./test/StaleOracle.t.sol) | Missing staleness / heartbeat check | ✅ |
-| 05 | `_coming soon_` — Integer Precision Loss | Rounding & precision attacks | 🚧 |
-| 06 | `_planned_` — Sandwich / MEV Front-running | Mempool exploitation | 📋 |
-| 07 | `_planned_` — Upgradeable Proxy Storage Collision | UUPS / transparent proxy misuse | 📋 |
+| 05 | [Integer Precision Loss](./test/Precision.t.sol) | Rounding & precision attacks (EIP-4626 inflation) | ✅ |
+| 06 | [Sandwich / MEV Front-running](./test/Sandwich.t.sol) | Mempool exploitation | ✅ |
+| 07 | [Upgradeable Proxy Storage Collision](./test/ProxyCollision.t.sol) | EIP-1967 vs hand-rolled proxy slots | ✅ |
 | 08 | `_planned_` — Signature Replay | EIP-712 nonce reuse | 📋 |
 | 09 | `_planned_` — Privileged Mint via Access Control | Role-based access flaws | 📋 |
 | 10 | `_planned_` — Unchecked Return Value (Low-level call) | Silent failures | 📋 |
@@ -59,17 +59,29 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 │   ├── VulnerableSwap.sol         # Lab 03 — vulnerable
 │   ├── SafeSwap.sol               # Lab 03 — remediated
 │   ├── VulnerableLending.sol      # Lab 04 — vulnerable
-│   └── SafeLending.sol           # Lab 04 — remediated
+│   ├── SafeLending.sol            # Lab 04 — remediated
+│   ├── VulnerablePool.sol         # Lab 05 — vulnerable
+│   ├── SafePool.sol               # Lab 05 — remediated
+│   ├── VulnerableAmm.sol          # Lab 06 — vulnerable
+│   ├── SafeAmm.sol                # Lab 06 — remediated
+│   ├── VulnerableProxy.sol        # Lab 07 — vulnerable
+│   └── SafeProxy.sol              # Lab 07 — remediated
 ├── test/
 │   ├── Reentrancy.t.sol           # Lab 01
 │   ├── TxOrigin.t.sol             # Lab 02
 │   ├── FlashLoan.t.sol            # Lab 03
-│   └── StaleOracle.t.sol          # Lab 04
+│   ├── StaleOracle.t.sol          # Lab 04
+│   ├── Precision.t.sol            # Lab 05
+│   ├── Sandwich.t.sol             # Lab 06
+│   └── ProxyCollision.t.sol       # Lab 07
 ├── labs/                          # per-lab deep-dive write-ups
 │   ├── lab-01-reentrancy/         # Lab 01 README (sources live in src/ and test/)
 │   ├── lab-02-tx-origin/          # Lab 02 README + self-contained src/test copy
 │   ├── lab-03-flash-loan/         # Lab 03 README + self-contained src/test copy
-│   └── lab-04-oracle-manipulation/ # Lab 04 README + self-contained src/test copy
+│   ├── lab-04-oracle-manipulation/ # Lab 04 README + self-contained src/test copy
+│   ├── lab-05-integer-precision-loss/ # Lab 05 README + self-contained src/test copy
+│   ├── lab-06-sandwich-mev/       # Lab 06 README + self-contained src/test copy
+│   └── lab-07-proxy-storage-collision/ # Lab 07 README + self-contained src/test copy
 ├── .github/workflows/
 │   └── test.yml                   # Foundry test + formatting CI
 ├── foundry.toml                   # project configuration
@@ -104,7 +116,7 @@ Tool output (Slither, Foundry fuzz) is treated as a **lead for manual verificati
 | Milestone | Target | Status |
 | --- | --- | --- |
 | 4 core labs | Reentrancy, tx.origin, Flash Loan, Stale Oracle | ✅ Done |
-| 6 additional labs | Precision, MEV, Proxy, Signatures, ACL, Low-level calls | 📋 2026 Q4 |
+| 6 additional labs | Precision, MEV, Proxy, Signatures, ACL, Low-level calls | 🚧 3/6 done (Precision, Sandwich, Proxy) |
 | Slither integration | Add Slither to CI with custom detectors | 🚧 In progress |
 | Invariant fuzzing | Echidna / `forge invariant` for each lab | 📋 2026 Q4 |
 | Blog writeups | Each lab paired with a public write-up | 📋 2027 Q1 |
