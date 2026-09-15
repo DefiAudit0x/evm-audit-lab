@@ -40,6 +40,8 @@ REQUIRED_DETECTIONS: list[tuple[str, str]] = [
     ("src/VulnerableAccess.sol", "arbitrary-send-eth"),   # Lab 02 — consequence of tx.origin
     ("src/VulnerableAmm.sol", "unchecked-transfer"),      # Lab 06 — unguarded token IO
     ("src/VulnerableRouter.sol", "unchecked-transfer"),   # Lab 10 — discarded bool
+    ("src/VulnerableUupsVault.sol", "controlled-delegatecall"),  # Lab 14 — owner-gated upgrade target
+    ("src/VulnerableUupsVault.sol", "arbitrary-send-eth"),      # Lab 14 — unguarded initializer makes owner attacker-chosen
 ]
 
 # --- 2. NEGATIVE: the class' detector must NOT fire on the Safe counterpart. ---
@@ -49,6 +51,10 @@ FORBIDDEN_ON_SAFE: dict[str, list[str]] = {
     "src/SafeAmm.sol": [],           # Lab 06's class (slippage) has no detector — see teaching note
     "src/SafeProxy.sol": ["proxy-storage-collision"],
     "src/SafeRouter.sol": ["unchecked-transfer"],
+    "src/SafeVault4626.sol": [],     # Lab 11's class (share inflation) has no detector — see teaching note
+    "src/SafeSplitter.sol": [],      # Lab 12's class (unbounded loop) has no detector — see teaching note
+    "src/SafeFotVault.sol": [],      # Lab 13's class (fee-on-transfer accounting) has no detector — see teaching note
+    "src/SafeUupsVault.sol": [],     # Lab 14's class (initializer guard) has no detector — see teaching note
 }
 
 # --- 3. TRIAGE: accepted out-of-scope High/Medium findings on Safe contracts. ---
@@ -72,6 +78,21 @@ ALLOWED_ON_SAFE: dict[tuple[str, str], str] = {
     ("src/SafeRouter.sol", "reentrancy-no-eth"):
         "Standard hook-free ERC-20 assumed; the entitlement state is "
         "updated immediately after the checked transfer returns.",
+    ("src/SafeVault4626.sol", "reentrancy-no-eth"):
+        "Standard hook-free ERC-20 assumed; shares are computed from "
+        "pre-call state and written after the checked transfer returns.",
+    ("src/SafeFotVault.sol", "reentrancy-balance"):
+        "The balance-delta deposit pattern intentionally re-reads the token "
+        "balance after the checked transfer; that observation IS the "
+        "remediation, and no privileged accounting sits between the reads.",
+    ("src/SafeSplitter.sol", "reentrancy-eth"):
+        "A payout loop necessarily continues after transfers; each owed "
+        "amount is zeroed before its transfer, so a reentrant distribute() "
+        "call cannot double-pay anyone.",
+    ("src/SafeUupsVault.sol", "controlled-delegatecall"):
+        "Upgrade target is owner-gated by design — this is the UUPS "
+        "pattern itself. Lab 14's subject is initializer protection, not "
+        "eliminating the delegatecall.",
 }
 
 # Vulnerability classes with no Slither detector — printed, never gated.
@@ -82,6 +103,10 @@ TEACHING_NOTE = """
   Lab 07     — proxy storage collision layout (structural intent)
   Lab 08     — signature replay (off-chain signature semantics)
   Lab 09     — missing access control on mint (authorization intent)
+  Lab 11     — ERC-4626 share-price inflation (numeric intent)
+  Lab 12     — unbounded-loop gas DoS (liveness / gas economics)
+  Lab 13     — fee-on-transfer accounting break (integration semantics)
+  Lab 14     — unguarded UUPS initializer (initialization semantics)
 These labs pair the tool with manual reasoning for exactly this reason.
 """
 

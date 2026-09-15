@@ -47,6 +47,10 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 | 08 | [Signature Replay](./test/SignatureReplay.t.sol) | Missing nonce/deadline/domain binding on signed payouts | ✅ |
 | 09 | [Privileged Mint](./test/PrivilegedMint.t.sol) | Unprotected supply creation on a backed token | ✅ |
 | 10 | [Unchecked Return Value](./test/UncheckedReturn.t.sol) | Discarded `bool` from `transfer` / low-level `call` | ✅ |
+| 11 | [ERC-4626 Inflation Attack](./test/InflationAttack.t.sol) | First-depositor share-price inflation via donation | ✅ |
+| 12 | [Unbounded Loop DoS](./test/LoopDoS.t.sol) | Gas-limit denial of service on an unbounded payee list | ✅ |
+| 13 | [Fee-on-Transfer Accounting](./test/FeeOnTransfer.t.sol) | Claims minted from requested, not received, amounts | ✅ |
+| 14 | [Unprotected UUPS Initializer](./test/UupsTakeover.t.sol) | Uninitialized proxy takeover via unguarded `initialize` | ✅ |
 
 ## Repository structure
 
@@ -72,7 +76,16 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 │   ├── VulnerableMint.sol         # Lab 09 — vulnerable
 │   ├── SafeMint.sol               # Lab 09 — remediated
 │   ├── VulnerableRouter.sol       # Lab 10 — vulnerable
-│   └── SafeRouter.sol             # Lab 10 — remediated
+│   ├── SafeRouter.sol             # Lab 10 — remediated
+│   ├── VulnerableVault4626.sol    # Lab 11 — vulnerable
+│   ├── SafeVault4626.sol          # Lab 11 — remediated
+│   ├── VulnerableSplitter.sol     # Lab 12 — vulnerable
+│   ├── SafeSplitter.sol           # Lab 12 — remediated
+│   ├── VulnerableFotVault.sol     # Lab 13 — vulnerable
+│   ├── SafeFotVault.sol           # Lab 13 — remediated
+│   ├── Erc1967Proxy.sol           # Lab 14 helper — minimal ERC-1967 proxy
+│   ├── VulnerableUupsVault.sol    # Lab 14 — vulnerable
+│   └── SafeUupsVault.sol          # Lab 14 — remediated
 ├── test/
 │   ├── Reentrancy.t.sol           # Lab 01
 │   ├── TxOrigin.t.sol             # Lab 02
@@ -83,7 +96,11 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 │   ├── ProxyCollision.t.sol       # Lab 07
 │   ├── SignatureReplay.t.sol      # Lab 08
 │   ├── PrivilegedMint.t.sol       # Lab 09
-│   └── UncheckedReturn.t.sol      # Lab 10
+│   ├── UncheckedReturn.t.sol      # Lab 10
+│   ├── InflationAttack.t.sol      # Lab 11
+│   ├── LoopDoS.t.sol              # Lab 12
+│   ├── FeeOnTransfer.t.sol        # Lab 13
+│   └── UupsTakeover.t.sol         # Lab 14
 ├── labs/                          # per-lab deep-dive write-ups
 │   ├── lab-01-reentrancy/         # Lab 01 README (sources live in src/ and test/)
 │   ├── lab-02-tx-origin/          # Lab 02 README + self-contained src/test copy
@@ -94,7 +111,11 @@ The same checks run automatically in GitHub Actions through `.github/workflows/t
 │   ├── lab-07-proxy-storage-collision/ # Lab 07 README + self-contained src/test copy
 │   ├── lab-08-signature-replay/   # Lab 08 README + self-contained src/test copy
 │   ├── lab-09-privileged-mint/    # Lab 09 README + self-contained src/test copy
-│   └── lab-10-unchecked-return-value/ # Lab 10 README + self-contained src/test copy
+│   ├── lab-10-unchecked-return-value/ # Lab 10 README + self-contained src/test copy
+│   ├── lab-11-erc4626-inflation/  # Lab 11 README + self-contained src/test copy
+│   ├── lab-12-loop-dos/           # Lab 12 README + self-contained src/test copy
+│   ├── lab-13-fee-on-transfer/    # Lab 13 README + self-contained src/test copy
+│   └── lab-14-uups-initializer/   # Lab 14 README + self-contained src/test copy
 ├── .github/
 │   ├── workflows/
 │   │   ├── test.yml               # Foundry test + formatting CI
@@ -145,6 +166,7 @@ Vulnerability classes static analysis cannot see (flash-loan and stale-oracle ma
 | --- | --- | --- |
 | 4 core labs | Reentrancy, tx.origin, Flash Loan, Stale Oracle | ✅ Done |
 | 6 additional labs | Precision, MEV, Proxy, Signatures, ACL, Low-level calls | ✅ Done |
+| 4 companion labs | 4626 inflation, Loop DoS, Fee-on-transfer, UUPS initializer | ✅ Done |
 | Slither integration | CI with detection assertions, safe-regression gate and written triage | ✅ Done |
 | Invariant fuzzing | Echidna / `forge invariant` for each lab | 📋 2026 Q4 |
 | Blog writeups | Each lab paired with a public write-up | 📋 2027 Q1 |
