@@ -33,6 +33,10 @@ forge fmt --check
 
 The same checks run automatically in GitHub Actions through `.github/workflows/test.yml`.
 
+## What this demonstrates
+
+This repository is designed to make vulnerability reasoning **reproducible**: each lab isolates one failure mode, shows the attack against a vulnerable implementation, then verifies a narrow remediation with a regression test. It is a training and research corpus, not a collection of production contracts.
+
 ## Lab index
 
 | # | Lab | Vulnerability class | Status |
