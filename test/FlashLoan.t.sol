@@ -31,9 +31,9 @@ import {SafeSwap} from "../src/SafeSwap.sol";
 ///   5. Attacker repays the flash loan. Net profit > 0.
 ///
 /// Remediation:
-///   Use a TWAP oracle (see SafeSwap). Single-block spot manipulation
-///   does not move the TWAP because the attacker would need to hold
-///   the manipulated reserves across many blocks.
+///   Use a cumulative-price TWAP oracle (see SafeSwap). A same-block spot
+///   manipulation contributes essentially zero time weight; an attacker
+///   must sustain the manipulated price across the observation window.
 ///
 /// Regression test:
 ///   The same spot manipulation against SafeSwap.getTWAP() must return
@@ -64,15 +64,20 @@ contract FlashLoanTest is Test {
         assertLt(priceAfter, priceBefore / 10, "spot price should be manipulated");
     }
 
-    /// @notice Regression: TWAP is robust to single-block manipulation.
+    /// @notice Regression: a same-block spot manipulation has negligible
+    ///         weight in a cumulative-price TWAP.
     function testTWAPResistsSingleBlockManipulation() public {
+        // Build the minimum observation history using the honest price.
+        vm.warp(block.timestamp + safe.PERIOD());
         uint256 twapBefore = safe.getTWAP();
+        assertEq(twapBefore, 1e18, "baseline TWAP should be 1.0");
 
-        // Attacker swaps a huge amount in the same block.
+        // Manipulate immediately after the observation window closes.
+        // No time elapses at the manipulated price in this block.
         safe.swap(MANIP_AMOUNT);
 
         uint256 twapAfter = safe.getTWAP();
-        // TWAP should not move by more than 5%.
+        // The manipulated spot contributes zero elapsed-time weight.
         assertApproxEqRel(twapBefore, twapAfter, 0.05e18, "TWAP moved too much");
     }
 }
