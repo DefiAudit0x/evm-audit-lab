@@ -2,52 +2,82 @@
 pragma solidity ^0.8.24;
 
 /// @title SafeSwap
-/// @notice Lab 03 — Remediated: uses TWAP (time-weighted average price)
-///         instead of spot reserves.
-/// @dev TWAP smooths out single-block manipulation because the attacker
-///      would have to hold the manipulated position across multiple
-///      blocks — at which point they bear the price risk.
+/// @notice Lab 03 — Remediated: uses a cumulative-price TWAP instead of spot reserves.
+/// @dev The cumulative price advances with elapsed time, so a same-block spot
+///      manipulation contributes essentially zero weight to the TWAP. A consumer
+///      must have at least PERIOD of observation history before reading it.
 contract SafeSwap {
     struct Observation {
-        uint256 price;
+        uint256 priceCumulative;
         uint32 timestamp;
     }
 
     Observation[] public observations;
     uint256 public reserveA;
     uint256 public reserveB;
+    uint256 public priceCumulativeLast;
+    uint32 public lastTimestamp;
     uint32 public constant PERIOD = 30 minutes;
 
     constructor(uint256 reserveA_, uint256 reserveB_) {
+        require(reserveA_ > 0, "zero reserve A");
+        require(reserveB_ > 0, "zero reserve B");
         reserveA = reserveA_;
         reserveB = reserveB_;
-        observations.push(Observation({price: (reserveB * 1e18) / reserveA, timestamp: uint32(block.timestamp)}));
+        lastTimestamp = uint32(block.timestamp);
+        observations.push(Observation({priceCumulative: 0, timestamp: lastTimestamp}));
     }
 
     function swap(uint256 amountIn) external {
+        require(amountIn > 0, "zero input");
+
+        _accumulatePrice();
+
         reserveA += amountIn;
         uint256 amountOut = (reserveB * amountIn) / reserveA;
+        require(amountOut > 0 && amountOut < reserveB, "invalid swap");
         reserveB -= amountOut;
-        _updateObservation();
+
+        // Record the post-swap cumulative price once a full observation
+        // period has elapsed since the last recorded observation.
+        if (block.timestamp >= observations[observations.length - 1].timestamp + PERIOD) {
+            observations.push(
+                Observation({
+                    priceCumulative: priceCumulativeLast,
+                    timestamp: uint32(block.timestamp)
+                })
+            );
+        }
     }
 
-    /// @notice Returns the time-weighted average price over the last
-    ///         PERIOD seconds. Manipulating spot price within a single
-    ///         block does not move this average meaningfully.
+    /// @notice Returns a time-weighted average price over an observation
+    ///         window of at least PERIOD seconds.
     function getTWAP() external view returns (uint256) {
         require(observations.length > 0, "no observations");
-        Observation memory current = observations[observations.length - 1];
-        Observation memory past = observations[0];
-        if (current.timestamp <= past.timestamp + PERIOD) {
-            return past.price;
+
+        Observation memory past = observations[observations.length - 1];
+        uint256 currentCumulative = priceCumulativeLast;
+        uint256 elapsedSinceUpdate = block.timestamp - lastTimestamp;
+
+        if (elapsedSinceUpdate > 0) {
+            currentCumulative += _spotPrice() * elapsedSinceUpdate;
         }
-        // Simplified TWAP for the lab: average of past and current.
-        return (past.price + current.price) / 2;
+
+        uint256 elapsed = block.timestamp - past.timestamp;
+        require(elapsed >= PERIOD, "insufficient observation history");
+
+        return (currentCumulative - past.priceCumulative) / elapsed;
     }
 
-    function _updateObservation() internal {
-        if (block.timestamp >= observations[observations.length - 1].timestamp + PERIOD) {
-            observations.push(Observation({price: (reserveB * 1e18) / reserveA, timestamp: uint32(block.timestamp)}));
+    function _spotPrice() internal view returns (uint256) {
+        return (reserveB * 1e18) / reserveA;
+    }
+
+    function _accumulatePrice() internal {
+        uint256 elapsed = block.timestamp - lastTimestamp;
+        if (elapsed > 0) {
+            priceCumulativeLast += _spotPrice() * elapsed;
+            lastTimestamp = uint32(block.timestamp);
         }
     }
 }
