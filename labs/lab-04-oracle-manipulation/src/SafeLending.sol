@@ -16,7 +16,12 @@ interface LendingTwap {
 /// @dev Educational debt-accounting model: no loan asset is transferred.
 ///      Debt and normalized prices have 18 decimals. For L2 or TWAP checks,
 ///      use ConfiguredSafeLending with feeds appropriate to the deployment.
+///      Owner-only rescueETH recovers only unaccounted ETH; user collateral
+///      can never be rescued. Each rescue uses the live balance, so nested
+///      rescues cannot over-drain and need no reentrancy guard.
 contract SafeLending {
+    address public immutable owner;
+    uint256 public totalCollateral;
     LendingFeed public immutable oracle;
     uint256 public constant MAX_STALENESS = 1 hours;
     uint256 public constant MIN_PRICE = 1e14; // reject absurdly low prices
@@ -25,17 +30,35 @@ contract SafeLending {
     mapping(address => uint256) public debt;
     uint256 public constant LTV = 75;
 
+    event EthRescued(address indexed to, uint256 amount);
+
     event Deposited(address indexed user, uint256 amount);
     event Borrowed(address indexed user, uint256 amount);
 
     constructor(address oracle_) {
+        owner = msg.sender;
         oracle = LendingFeed(oracle_);
     }
 
     function deposit(uint256 amount) external payable {
         require(amount > 0 && msg.value == amount, "invalid deposit");
         collateral[msg.sender] += amount;
+        totalCollateral += amount;
         emit Deposited(msg.sender, amount);
+    }
+
+    /// @notice Owner-only recovery of ETH never credited as collateral.
+    /// @dev Collateral is never rescuable. Nested calls recompute the live
+    ///      surplus after each transfer, so no reentrancy guard is needed.
+    function rescueETH(address payable to, uint256 amount) external {
+        require(msg.sender == owner, "not owner");
+        require(to != address(0), "zero address");
+        // Only unaccounted ETH is recoverable; reentry sees the reduced balance.
+        uint256 recoverable = address(this).balance - totalCollateral;
+        require(amount <= recoverable, "exceeds recoverable");
+        (bool ok,) = to.call{value: amount}("");
+        require(ok, "transfer failed");
+        emit EthRescued(to, amount);
     }
 
     /// @notice SAFE: checks staleness and sanity before use.

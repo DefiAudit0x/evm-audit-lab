@@ -1,7 +1,7 @@
 # Slither suppression decisions
 
 The project has no inline `slither-disable` directives or excluded detectors.
-The gate's ten accepted findings are individually documented below; a `Safe*`
+The gate's eight accepted findings are individually documented below; a `Safe*`
 filename is not evidence that a finding is harmless. Each exception identifies
 one finding, describes its concrete behavior and assumptions, and cites test or
 source evidence.
@@ -29,7 +29,18 @@ Slither 0.11.6 ran a real scan and produced 115 detector results. The sanitized
 baseline report is committed at
 [`docs/slither-baseline-2026-11-21.json`](slither-baseline-2026-11-21.json),
 so maintainers can retrieve and re-run the triage without a machine-specific
-home-directory path.
+home-directory path. Fix 36 (2026-11-21) resolved the two
+`locked-ether` findings; the re-scan produced 117 detector results.
+
+## Resolved findings
+
+### Resolved 2026-11-21 (Fix 36): `src/SafeLending.sol` / `locked-ether`
+
+Owner-only `rescueETH` recovers unaccounted ETH while `totalCollateral` protects all credited collateral. The live-balance cap also bounds nested rescues. Removed this pair from `ACCEPTED`. Evidence in `test/RescueEth.t.sol`: `testLendingOwnerRescuesStrayEthPreservingCollateral`, `testLendingRescueCannotTakeCollateral`, `testLendingRescueRejectsNonOwner`, `testLendingRescueRejectsZeroAddress`, and `testConfiguredLendingInheritsRescue`.
+
+### Resolved 2026-11-21 (Fix 36): `src/SafeProxy.sol` / `locked-ether`
+
+Admin-only `rescueETH` recovers proxy-held ETH without adding trust beyond the existing arbitrary upgrade authority. Proxy functions take precedence over fallback dispatch. Removed this pair from `ACCEPTED`. Evidence in `test/RescueEth.t.sol`: `testProxyAdminRescuesEth`, `testProxyRescueRejectsNonAdmin`, `testProxyRescueRejectsExcessAndZeroAddress`, and `testProxyImplementationWorksAfterRescue`.
 
 ## Accepted findings (2026-11-21)
 
@@ -59,26 +70,10 @@ Each acceptance below is owned by DefiAudit0x and expires on 2027-05-21.
 **Owner:** DefiAudit0x  
 **Expiry:** 2027-05-21
 
-<a id="accepted-4"></a>
-### Entry 4: `src/SafeLending.sol` / `locked-ether`
-
-**Verdict:** ACCEPT (Medium; acknowledged limitation). ETH deposited as collateral has no recovery path. This is an educational debt-accounting model, not a custody product: the contract documents that no loan asset is transferred and has no withdrawal path; it must not be deployed or presented as a custody product. **Evidence:** NatSpec in `src/SafeLending.sol` and the Lab 04 README.
-
-**Owner:** DefiAudit0x  
-**Expiry:** 2027-05-21
-
 <a id="accepted-5"></a>
 ### Entry 5: `src/SafeLending.sol` / `unused-return`
 
 **Verdict:** ACCEPT (Medium). `ConfiguredSafeLending._validatedPrice` intentionally ignores the sequencer feed's `roundId` and `answeredInRound`: it validates status and `startedAt` (nonzero, not future, and beyond the one-hour grace period). The primary price feed separately validates round completeness with `answeredInRound >= roundId`; the sequencer check does not independently validate freshness. **Evidence:** `testL2OracleChecksSequencerStatusAndRecovery` in `test/StaleOracle.t.sol` and the Lab 04 README.
-
-**Owner:** DefiAudit0x  
-**Expiry:** 2027-05-21
-
-<a id="accepted-6"></a>
-### Entry 6: `src/SafeProxy.sol` / `locked-ether`
-
-**Verdict:** ACCEPT (Medium; acknowledged limitation). ETH sent to the proxy has no recovery path in the current minimal implementations. The proxy is a delegatecall forwarder for a storage-collision teaching lab; value handling belongs to the implementation, and the proxy must not add its own value logic. **Evidence:** NatSpec in `src/SafeProxy.sol` and the Lab 07 README.
 
 **Owner:** DefiAudit0x  
 **Expiry:** 2027-05-21
