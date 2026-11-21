@@ -5,8 +5,13 @@ import unittest
 from unittest.mock import mock_open, patch
 
 import audit_report as a
+from check_slither import ACCEPTED
 
 ROOT = Path(__file__).resolve().parents[2]
+EXPECTED_DEFAULT_ALLOWLIST = [
+    {"path": path, "check": check, "reason": reason}
+    for (path, check), reason in sorted(ACCEPTED.items())
+]
 
 
 def detector(
@@ -74,7 +79,7 @@ class AuditTests(unittest.TestCase):
     def test_defaults_validate(self):
         result = a.load_policy(None, ROOT)
         self.assertEqual(len(result["required_detections"]), 7)
-        self.assertEqual(result["allowed_on_safe"], [])
+        self.assertEqual(result["allowed_on_safe"], EXPECTED_DEFAULT_ALLOWLIST)
 
     def test_research_metadata_exports(self):
         key = "src/SafeA.sol:SafeA"
@@ -106,12 +111,49 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(props["research"], research)
         self.assertIn('"foundry_fuzz_seed": "0x13"', a.render(report, "markdown"))
 
+    def research(self, revision=None, dirty=None):
+        artifact = {
+            "metadata": {
+                "compiler": {"version": "0.8.24"},
+                "settings": {"compilationTarget": {"src/A.sol": "A"}},
+            },
+            "storageLayout": {"storage": [], "types": {}},
+        }
+        tests = {"suite": {"test_results": {}}}
+        with (
+            patch.object(Path, "glob", return_value=[Path("out/A.sol/A.json")]),
+            patch.object(a, "read_json", side_effect=[artifact, tests]),
+            patch.object(a.subprocess, "check_output", side_effect=["forge", "slither", "checkout-rev", ""]),
+        ):
+            return a.collect_research(
+                ROOT, Path("out"), Path("test.json"), "seed", revision, dirty
+            )
+
+    def test_provided_provenance_is_used_verbatim(self):
+        research = self.research("artifact-revision", True)
+        self.assertEqual(research["source_revision"], "artifact-revision")
+        self.assertIs(research["source_dirty"], True)
+        self.assertEqual(research["source_revision_origin"], "provided")
+
+    def test_absent_provenance_uses_exporter_checkout(self):
+        research = self.research()
+        self.assertEqual(research["source_revision"], "checkout-rev")
+        self.assertIs(research["source_dirty"], False)
+        self.assertEqual(research["source_revision_origin"], "exporter-checkout")
+
+    def test_url_markdown_anchor_uses_structured_source_mapping(self):
+        item = detector("src/VulnerableVault.sol")
+        item["first_markdown_element"] = "https://github.com/org/repo/blob/main/src/VulnerableVault.sol#L9"
+        findings = a.parse_findings(raw(item), ROOT)
+        self.assertEqual(findings[0]["locations"][0]["path"], "src/VulnerableVault.sol")
+        self.assertEqual(findings[0]["locations"][0]["start_line"], 5)
+
     def test_partial_config_preserves_defaults(self):
         result = self.config(
             {"schema_version": 1, "required_detections": []}
         )
         self.assertFalse(result["required_detections"])
-        self.assertEqual(result["allowed_on_safe"], [])
+        self.assertEqual(result["allowed_on_safe"], EXPECTED_DEFAULT_ALLOWLIST)
         self.assertTrue(result["forbidden_on_safe"])
 
     def test_bad_config(self):
@@ -322,6 +364,40 @@ class AuditTests(unittest.TestCase):
             a.render(result, "json"),
             a.render(self.build(raw(second, first)), "json"),
         )
+
+    def router_allowlist_report(self, primary, related):
+        item = detector(primary, "unchecked-transfer", "High")
+        item["elements"].append(
+            {"source_mapping": {"filename_relative": related, "lines": [2]}}
+        )
+        rules = policy(allowed=[
+            ("src/SafeRouter.sol", "unchecked-transfer", "Reviewed router scope")
+        ])
+        return self.build(raw(item), rules, threshold="high")
+
+    def test_related_allowlist_does_not_accept_primary(self):
+        result = self.router_allowlist_report(
+            "src/VulnerableRouter.sol", "src/SafeRouter.sol"
+        )
+        finding = result["findings"][0]
+        self.assertEqual(finding["locations"][0]["path"], "src/VulnerableRouter.sol")
+        self.assertEqual(finding["disposition"], "observation")
+        self.assertNotIn("justification", finding)
+        self.assertEqual(result["summary"]["threshold_failures"], 1)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["gates"][0]["kind"], "safe-triage")
+        self.assertEqual(result["gates"][0]["status"], "passed")
+
+    def test_primary_allowlist_preserves_acceptance(self):
+        result = self.router_allowlist_report(
+            "src/SafeRouter.sol", "src/VulnerableRouter.sol"
+        )
+        finding = result["findings"][0]
+        self.assertEqual(finding["locations"][0]["path"], "src/SafeRouter.sol")
+        self.assertEqual(finding["disposition"], "allowed")
+        self.assertEqual(finding["justification"], "Reviewed router scope")
+        self.assertEqual(result["summary"]["threshold_failures"], 0)
+        self.assertEqual(result["status"], "passed")
 
     def test_related_safe_source_gates_shared_attribution_policy(self):
         item = detector(

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,12 +12,16 @@ from audit.detectors.access_control import detect_source
 from audit.detectors.oracle import detect_source as detect_oracle_source
 from audit.detectors.storage_collision import detect_source as detect_storage_collision_source
 
+from audit.detectors import precision, proxy_upgrade, reentrancy
+from audit.detectors.solidity import contract_blocks
+from audit.detectors.storage_collision import EIP1967_IMPLEMENTATION, _dedicated_slot_status
+
 
 class DetectorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         result = subprocess.run(
-            [sys.executable, "-m", "audit.detectors", "--root", str(ROOT)],
+            [sys.executable, "-B", "-m", "audit.detectors", "--root", str(ROOT)],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -157,6 +162,193 @@ class DetectorTests(unittest.TestCase):
 
     def test_proxy_upgrade_ignores_safe_uups_vault(self):
         self.assertNotIn(("proxy_upgrade", "src/SafeUupsVault.sol", "SafeUupsVault"), self.findings)
+
+
+class DetectorMinorTests(unittest.TestCase):
+    path = Path("src/Synthetic.sol")
+
+    def test_d01_internal_and_private_helpers_are_not_entry_points(self):
+        for visibility in ("internal", "private"):
+            with self.subTest(visibility=visibility):
+                source = """
+                contract Mint {
+                    uint256 totalSupply;
+                    function mint(uint256 amount) VISIBILITY { totalSupply += amount; }
+                }
+                """.replace("VISIBILITY", visibility)
+                self.assertEqual(detect_source(ROOT, self.path, source), [])
+
+    def test_d02_pause_writes_require_authorization(self):
+        source = """
+        contract Pausable {
+            bool paused;
+            address owner;
+            function pause() external { paused = true; }
+            function unpause() public { paused = false; }
+        }
+        """
+        self.assertEqual(len(detect_source(ROOT, self.path, source)), 2)
+        protected = source.replace("{ paused =", "{ require(msg.sender == owner); paused =")
+        self.assertEqual(detect_source(ROOT, self.path, protected), [])
+
+    def test_d03_recipient_check_does_not_authorize_mint(self):
+        source = """
+        contract Mint {
+            uint256 totalSupply;
+            address owner;
+            function mint(address to, uint256 amount) external {
+                require(to != msg.sender);
+                totalSupply += amount;
+            }
+        }
+        """
+        self.assertEqual(len(detect_source(ROOT, self.path, source)), 1)
+        protected = source.replace("to != msg.sender", "owner == msg.sender")
+        self.assertEqual(detect_source(ROOT, self.path, protected), [])
+
+    def test_d04_fixed_array_resize_changes_storage_prefix(self):
+        source = """
+        contract LayoutV1 {
+            uint256[2] reserved;
+            uint256 value;
+        }
+        contract LayoutV2 {
+            uint256[1] reserved;
+            uint256 value;
+        }
+        """
+        findings = detect_storage_collision_source(ROOT, self.path, source)
+        self.assertEqual([item.title for item in findings], ["Upgrade changes an existing storage prefix"])
+        unchanged = source.replace("[1]", "[ 2 ]")
+        self.assertEqual(detect_storage_collision_source(ROOT, self.path, unchanged), [])
+
+    def test_d05_standard_slot_does_not_isolate_ordinary_storage(self):
+        source = f"""
+        contract Proxy {{
+            bytes32 constant IMPLEMENTATION_SLOT = 0x{EIP1967_IMPLEMENTATION};
+            address admin;
+            fallback() external {{
+                bytes32 slot = IMPLEMENTATION_SLOT;
+                assembly {{
+                    let impl := sload(slot)
+                    let result := delegatecall(gas(), impl, 0, 0, 0, 0)
+                }}
+            }}
+        }}
+        contract Logic {{
+            uint256 value;
+        }}
+        """
+        findings = detect_storage_collision_source(ROOT, self.path, source)
+        self.assertEqual([item.title for item in findings], ["Proxy slot 0 overlaps implementation storage"])
+        isolated = source.replace("address admin;", "")
+        self.assertEqual(detect_storage_collision_source(ROOT, self.path, isolated), [])
+
+    def test_d06_reassignment_invalidates_slot_read(self):
+        source = f"""
+        contract Proxy {{
+            bytes32 constant IMPLEMENTATION_SLOT = 0x{EIP1967_IMPLEMENTATION};
+            fallback() external {{
+                bytes32 slot = IMPLEMENTATION_SLOT;
+                assembly {{
+                    let impl := sload(slot)
+                    REASSIGN
+                    let result := delegatecall(gas(), impl, 0, 0, 0, 0)
+                }}
+            }}
+        }}
+        """
+        for replacement, expected in (("", "valid"), ("impl := sload(0)", "missing")):
+            with self.subTest(replacement=replacement):
+                contract = next(contract_blocks(self.path, source.replace("REASSIGN", replacement)))
+                self.assertEqual(_dedicated_slot_status(contract), expected)
+
+    def test_d07_setting_flag_does_not_guard_initializer(self):
+        source = """
+        contract Vault {
+            address owner;
+            bool initialized;
+            function initialize(address nextOwner) external {
+                owner = nextOwner;
+                initialized = true;
+            }
+        }
+        """
+        self.assertEqual(len(proxy_upgrade.detect_source(ROOT, self.path, source)), 1)
+        guarded = source.replace("owner = nextOwner;", "if (initialized) revert(); owner = nextOwner;")
+        self.assertEqual(proxy_upgrade.detect_source(ROOT, self.path, guarded), [])
+
+    def test_d08_division_whitespace_does_not_change_finding(self):
+        for expression in ("(amount / total) * supply", "(amount/total)*supply"):
+            with self.subTest(expression=expression):
+                source = f"""
+                contract Pool {{
+                    function quote(uint amount, uint total, uint supply) external pure returns (uint) {{
+                        return {expression};
+                    }}
+                }}
+                """
+                findings = precision.detect_source(ROOT, self.path, source)
+                self.assertEqual([item.title for item in findings], ["Arithmetic divides before multiplying"])
+
+    def test_d09_reads_state_declarations_after_functions_and_constructors(self):
+        for preceding_member in ("constructor() {}", "function helper() private {}"):
+            with self.subTest(preceding_member=preceding_member):
+                source = f"""
+                contract Vault {{
+                    {preceding_member}
+                    function update(address receiver) external {{
+                        (bool ok,) = receiver.call("");
+                        require(ok);
+                        balances[msg.sender] = 0;
+                    }}
+                    mapping(address => uint256) balances;
+                }}
+                """
+                self.assertEqual(len(reentrancy.detect_source(ROOT, self.path, source)), 1)
+        local_only = """
+        contract Example {
+            function update(address receiver) external {
+                (bool ok,) = receiver.call("");
+                require(ok);
+                uint256 scratch = 0;
+            }
+        }
+        """
+        self.assertEqual(reentrancy.detect_source(ROOT, self.path, local_only), [])
+
+    def test_d10_unrelated_twap_members_do_not_hide_spot_getter(self):
+        for member in (
+            "uint256[] observations;",
+            "function getTWAP() external pure returns (uint256) { return 1; }",
+        ):
+            with self.subTest(member=member):
+                source = f"""
+                contract Oracle {{
+                    uint256 reserveA;
+                    uint256 reserveB;
+                    {member}
+                    function getPrice() external view returns (uint256) {{
+                        return reserveB * 1e18 / reserveA;
+                    }}
+                }}
+                """
+                findings = detect_oracle_source(ROOT, self.path, source)
+                self.assertEqual([item.title for item in findings], ["Oracle exposes a manipulable reserve spot price"])
+
+    def test_d11_cli_rejects_nonexistent_scan_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            valid_root = Path(directory)
+            missing_root = valid_root / "missing"
+            command = [sys.executable, "-B", "-m", "audit.detectors", "--root"]
+            result = subprocess.run(command + [str(missing_root)], cwd=ROOT, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Scan root", result.stderr)
+            self.assertIn(str(missing_root), result.stderr)
+
+            empty = subprocess.run(command + [str(valid_root)], cwd=ROOT, capture_output=True, text=True, timeout=10)
+            self.assertEqual(empty.returncode, 0, empty.stderr)
+            self.assertEqual(json.loads(empty.stdout)["findings"], [])
 
 
 if __name__ == "__main__":

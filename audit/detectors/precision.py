@@ -10,7 +10,7 @@ from .solidity import contract_blocks, function_blocks, relative_path, solidity_
 
 
 DIVIDE_THEN_MULTIPLY = re.compile(
-    r"\([^()]+\s/\s[^()]+\)\s*\*\s*[A-Za-z0-9_(]"
+    r"\([^()]+\s*/\s*[^()]+\)\s*\*\s*[A-Za-z0-9_(]"
 )
 
 

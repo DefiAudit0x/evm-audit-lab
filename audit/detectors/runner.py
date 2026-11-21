@@ -20,6 +20,8 @@ DETECTORS = (
 
 
 def run(root: Path) -> dict[str, object]:
+    if not root.is_dir():
+        raise NotADirectoryError(f"Scan root is not a directory: {root}")
     findings = [finding for detector in DETECTORS for finding in detector.detect(root)]
     findings.sort(key=lambda item: (item.file, item.line, item.detector, item.contract, item.title))
     return {
@@ -33,7 +35,11 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Run dependency-free audit review detectors.")
     parser.add_argument("--root", type=Path, default=Path.cwd(), help="repository root")
     args = parser.parse_args(argv)
-    print(json.dumps(run(args.root), indent=2, sort_keys=True))
+    try:
+        report = run(args.root)
+    except NotADirectoryError as error:
+        parser.error(str(error))
+    print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 
 

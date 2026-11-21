@@ -13,12 +13,15 @@ PRIVILEGED_FUNCTIONS = re.compile(
     r"^(?:mint|setMinter|setClaimable|upgradeTo(?:AndCall)?|pause|unpause|setOwner|setAdmin|initialize)$"
 )
 AUTH_MODIFIER = re.compile(r"\bonly(?:Owner|Admin|Role|Minter)\b")
+AUTHORITY = r"(?:_?(?:owner|admin|minter)(?:\s*\(\s*\))?|_getSlot\s*\(\s*ADMIN_SLOT\s*\))"
+CALLER = r"msg\.sender"
+ROLE_CHECK = rf"(?:hasRole\s*\(\s*\w+\s*,\s*{CALLER}\s*\)|isMinter\s*\[\s*{CALLER}\s*\])"
 CALLER_CHECK = re.compile(
-    r"\b(?:require|assert)\s*\([^;]*(?:msg\.sender\s*(?:==|!=)|(?:==|!=)\s*msg\.sender|"
-    r"hasRole\s*\([^;]*msg\.sender|isMinter\s*\[\s*msg\.sender\s*\])"
-    r"|\bif\s*\([^)]*(?:msg\.sender\s*(?:==|!=)|(?:==|!=)\s*msg\.sender|"
-    r"hasRole\s*\([^)]*msg\.sender|isMinter\s*\[\s*msg\.sender\s*\])[^)]*\)\s*(?:revert|return|\{\s*revert)",
-    re.DOTALL,
+    rf"\b(?:require|assert)\s*\(\s*(?:{CALLER}\s*==\s*{AUTHORITY}|"
+    rf"{AUTHORITY}\s*==\s*{CALLER}|{ROLE_CHECK})\s*(?:,|\))"
+    rf"|\bif\s*\(\s*(?:{CALLER}\s*!=\s*{AUTHORITY}|"
+    rf"{AUTHORITY}\s*!=\s*{CALLER}|!\s*{ROLE_CHECK})\s*\)"
+    r"\s*(?:\{\s*)?(?:revert|return)\b",
 )
 ONE_SHOT_INITIALIZER = re.compile(
     r"\brequire\s*\(\s*!\s*(\w+)\b[^;]*\)\s*;"
@@ -31,7 +34,6 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
     findings = []
     for contract in contract_blocks(source_path, source):
         for function in function_blocks(contract):
-            body = function.code_header + function.code_body
             if not PRIVILEGED_FUNCTIONS.fullmatch(function.name):
                 if "tx.origin" in function.code_body and re.search(r"\b(?:owner|admin)\b", function.code_body):
                     findings.append(
@@ -39,7 +41,9 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                                  "Authorization depends on tx.origin", "tx.origin can authorize a contract call initiated by the owner; use an explicit role check on msg.sender.", "high")
                     )
                 continue
-            sensitive = bool(re.search(r"\b(?:totalSupply|totalMinted|isMinter|claimable|implementation|owner|admin)\b\s*(?:\[[^\]]+\])?\s*(?:=|\+=|-=)", function.code_body))
+            if not re.search(r"\b(?:public|external)\b", function.code_header):
+                continue
+            sensitive = bool(re.search(r"\b(?:totalSupply|totalMinted|isMinter|claimable|implementation|owner|admin|_?paused)\b\s*(?:\[[^\]]+\])?\s*(?:=(?!=)|\+=|-=)", function.code_body))
             initializer = function.name == "initialize" and re.search(r"\b(?:owner|admin)\s*=", function.code_body)
             authorized = AUTH_MODIFIER.search(function.code_header) or CALLER_CHECK.search(function.code_body)
             guarded_initializer = function.name == "initialize" and ONE_SHOT_INITIALIZER.search(function.code_body)

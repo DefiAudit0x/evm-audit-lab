@@ -345,7 +345,13 @@ def parse_findings(raw, root):
                 "first_markdown_element must be a string",
             )
         if anchor:
+            if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", anchor):
+                primary = locations[0] if locations else None
+                require(primary is not None, "URL source anchor has no source mapping")
+                locations.insert(0, primary)
+                anchor = ""
             filename, _, fragment = anchor.partition("#")
+        if anchor:
             match = re.fullmatch(
                 r"L?([1-9][0-9]*)(?:-L?([1-9][0-9]*))?",
                 fragment,
@@ -415,7 +421,14 @@ def parse_findings(raw, root):
     )
 
 
-def collect_research(root, build_dir, test_results, seed):
+def collect_research(
+    root,
+    build_dir,
+    test_results,
+    seed,
+    source_revision=None,
+    source_dirty=None,
+):
     """Collect provenance and Foundry output from the same checkout and run."""
     def command(*args):
         try:
@@ -455,8 +468,9 @@ def collect_research(root, build_dir, test_results, seed):
             "slither": command("slither", "--version"),
         },
         "compiler_settings": compilers,
-        "source_revision": command("git", "rev-parse", "HEAD"),
-        "source_dirty": bool(command("git", "status", "--porcelain")),
+        "source_revision": source_revision if source_revision is not None else command("git", "rev-parse", "HEAD"),
+        "source_dirty": source_dirty if source_dirty is not None else bool(command("git", "status", "--porcelain")),
+        "source_revision_origin": "provided" if source_revision is not None and source_dirty is not None else "exporter-checkout",
         "test_seeds": {"foundry_fuzz_seed": seed},
         "minimal_counterexamples": counterexamples,
         "storage_layouts": layouts,
@@ -575,7 +589,8 @@ def build_report(findings, policy, threshold="none"):
                 disposition = "regression"
             elif safe and pair in allowed:
                 disposition = "allowed"
-                item["justification"] = allowed[pair]
+                if path == item["locations"][0]["path"]:
+                    item["justification"] = allowed[pair]
             elif safe and item["severity"] in ("high", "medium"):
                 disposition = "untriaged"
             elif pair in required:
@@ -587,10 +602,10 @@ def build_report(findings, policy, threshold="none"):
         item["disposition"] = next(
             (
                 status
-                for status in ("regression", "untriaged", "allowed", "expected")
+                for status in ("regression", "untriaged")
                 if status in dispositions
             ),
-            "observation",
+            dispositions[0],
         )
         report["summary"]["by_severity"][item["severity"]] += 1
 
@@ -1015,7 +1030,11 @@ def main(argv=None):
     parser.add_argument("--build-dir", type=Path, help="Foundry output with storageLayout")
     parser.add_argument("--test-results", type=Path, help="Foundry test --json output")
     parser.add_argument("--test-seed", help="Seed passed to Foundry via --fuzz-seed")
+    parser.add_argument("--source-revision", help="Revision recorded when artifacts were generated")
+    parser.add_argument("--source-dirty", choices=("true", "false"), help="Dirty state recorded when artifacts were generated")
     args = parser.parse_args(argv)
+    if (args.source_revision is None) != (args.source_dirty is None):
+        parser.error("--source-revision and --source-dirty must be supplied together")
     metadata_inputs = (args.build_dir, args.test_results, args.test_seed)
     if any(metadata_inputs) and (not all(metadata_inputs) or args.validate_config):
         parser.error("research exports require --build-dir, --test-results and --test-seed")
@@ -1088,7 +1107,14 @@ def main(argv=None):
             return 0
 
         research = (
-            collect_research(root, *metadata_inputs) if all(metadata_inputs) else None
+            collect_research(
+                root,
+                *metadata_inputs,
+                args.source_revision,
+                None if args.source_dirty is None else args.source_dirty == "true",
+            )
+            if all(metadata_inputs)
+            else None
         )
         report = build_report(
             parse_findings(

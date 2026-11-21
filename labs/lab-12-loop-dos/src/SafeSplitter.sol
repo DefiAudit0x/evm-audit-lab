@@ -13,6 +13,8 @@ contract SafeSplitter {
     uint256 public cursor;
     uint256 public totalPending;
     uint256 public totalOwed;
+    /// @dev Frozen payee count for the current traversal, or zero when idle.
+    uint256 private traversalEnd;
 
     uint256 public constant MAX_BATCH = 256;
     uint256 public constant PAYOUT_GAS = 30_000;
@@ -39,14 +41,14 @@ contract SafeSplitter {
     }
 
     /// @notice Credits pending deposits without calling any payee.
-    /// @return done True when this traversal has processed every registered payee.
+    /// @return done True when this traversal has processed every payee registered at its start.
     function distribute(uint256 maxPayees) external returns (bool done) {
         require(maxPayees > 0 && maxPayees <= MAX_BATCH, "invalid batch");
 
-        uint256 n = payees.length;
-        if (n == 0) return true;
+        if (cursor == 0) traversalEnd = payees.length;
+        uint256 end = traversalEnd;
 
-        uint256 remaining = n - cursor;
+        uint256 remaining = end - cursor;
         uint256 count = maxPayees < remaining ? maxPayees : remaining;
         for (uint256 i; i < count; ++i) {
             address payee = payees[cursor];
@@ -62,8 +64,11 @@ contract SafeSplitter {
             emit Distributed(payee, amount);
         }
 
-        done = cursor == n;
-        if (done) cursor = 0;
+        done = cursor == end;
+        if (done) {
+            cursor = 0;
+            traversalEnd = 0;
+        }
     }
 
     /// @notice Claims the caller's full distributed balance.

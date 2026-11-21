@@ -39,25 +39,27 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                         contract=contract.name,
                     )
                 )
-        if "getTWAP" not in code and "observations" not in code:
-            spot_function = any(
-                function.name in {"getPrice", "price"}
-                and re.search(r"reserve\w*[\s()]*\*[\s()]*1e18[\s()]*/[\s()]*reserve\w*", function.code_body)
-                for function in function_blocks(contract)
+        spot_function = any(
+            function.name in {"getPrice", "price"}
+            and re.search(
+                r"\breturn\s+[\s(]*reserve\w*[\s()]*\*[\s()]*1e18[\s()]*/[\s()]*reserve\w*[\s)]*;",
+                function.code_body,
             )
-            if spot_function:
-                findings.append(
-                    Finding(
-                        detector="oracle",
-                        severity="high",
-                        confidence="high",
-                        title="Oracle exposes a manipulable reserve spot price",
-                        message="The price is computed directly from current reserves without a time-weighted observation path.",
-                        file=relative_path(root, source_path),
-                        line=contract.line(contract.start),
-                        contract=contract.name,
-                    )
+            for function in function_blocks(contract)
+        )
+        if spot_function:
+            findings.append(
+                Finding(
+                    detector="oracle",
+                    severity="high",
+                    confidence="high",
+                    title="Oracle exposes a manipulable reserve spot price",
+                    message="The price is computed directly from current reserves without a time-weighted observation path.",
+                    file=relative_path(root, source_path),
+                    line=contract.line(contract.start),
+                    contract=contract.name,
                 )
+            )
     return findings
 
 

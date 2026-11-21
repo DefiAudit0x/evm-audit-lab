@@ -235,7 +235,7 @@ def main() -> int:
 
     print("\n=== 3. Triage: High/Medium on Safe* must be allowlisted ===")
     for (fpath, check), impact in sorted(findings.items()):
-        if "/Safe" not in fpath or impact not in ("High", "Medium"):
+        if not Path(fpath).name.startswith("Safe") or impact not in ("High", "Medium"):
             continue
         reason = ACCEPTED.get((fpath, check))
         if reason:

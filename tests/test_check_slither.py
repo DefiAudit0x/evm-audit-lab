@@ -103,6 +103,10 @@ class SlitherGateTests(unittest.TestCase):
             with self.subTest(first=order[0]["impact"]):
                 self.assert_gate(report(*order), 1, "UNTRIAGED [Medium]")
 
+    def test_safe_matching_uses_filename_not_parent_path(self):
+        finding = detector("incorrect-equality", "High", "src/SafeLessons/Ordinary.sol")
+        self.assert_gate(report(finding), 0, "RESULT: PASS")
+
     def test_second_source_element_is_gated(self):
         finding = detector(
             "unchecked-transfer", "High", "src/VulnerableRouter.sol", "./src/SafeRouter.sol"

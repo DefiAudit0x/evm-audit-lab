@@ -8,6 +8,8 @@ import re
 from .finding import Finding
 from .solidity import contract_blocks, function_blocks, relative_path, solidity_files
 
+from .storage_collision import _storage_fields
+
 
 INTERACTION = re.compile(
     r"\.\s*(?:call|delegatecall|staticcall|transfer|send|safeTransfer|"
@@ -26,13 +28,13 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
     findings: list[Finding] = []
     for contract in contract_blocks(source_path, source):
         functions = list(function_blocks(contract))
+        state_names = {name for name, _, _ in _storage_fields(contract, {})}
         for function in functions:
             body = function.code_body
             header = function.code_header
             if "nonReentrant" in header or "nonReentrant" in body:
                 continue
             interactions = list(INTERACTION.finditer(body))
-            state_names = _storage_names(contract.code_body)
             if interactions and any(
                 _storage_write_after(body, match.end(), state_names) for match in interactions
             ):
@@ -74,17 +76,6 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                 )
             )
     return findings
-
-
-def _storage_names(contract_body: str) -> set[str]:
-    declarations = re.split(r"\b(?:function|constructor|modifier|fallback|receive)\b", contract_body, maxsplit=1)[0]
-    return set(
-        re.findall(
-            r"\b(?:address(?:\s+payable)?|bool|u?int\d*|bytes\d*|mapping\s*\([^;]+?\)|\w+)\s+"
-            r"(?:(?:public|private|internal|constant|immutable|transient)\s+)*([A-Za-z_]\w*)\s*(?:=[^;]*)?;",
-            declarations,
-        )
-    )
 
 
 def _storage_write_after(body: str, offset: int, state_names: set[str]) -> bool:

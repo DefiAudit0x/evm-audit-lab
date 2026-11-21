@@ -9,6 +9,24 @@ from .finding import Finding
 from .solidity import contract_blocks, function_blocks, relative_path, solidity_files
 
 
+INITIALIZATION_MODIFIER = re.compile(r"\b(?:initializer|onlyInitializing)\b(?!\s*[,\)])")
+INITIALIZED_FLAG = r"_?initialized"
+REPEAT_GUARD = re.compile(
+    rf"\b(?:require|assert)\s*\(\s*!\s*({INITIALIZED_FLAG})\s*(?:,|\))[^;]*;"
+    rf"|\bif\s*\(\s*({INITIALIZED_FLAG})\s*\)\s*(?:\{{\s*)?(?:revert|return)\b[^;]*;"
+)
+
+
+def _has_repeat_guard(header: str, body: str) -> bool:
+    if INITIALIZATION_MODIFIER.search(header):
+        return True
+    for guard in REPEAT_GUARD.finditer(body):
+        flag = guard.group(1) or guard.group(2)
+        if re.search(rf"\b{flag}\s*=\s*true\s*;", body[guard.end():]):
+            return True
+    return False
+
+
 def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
     findings = []
     for contract in contract_blocks(source_path, source):
@@ -16,8 +34,8 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
         functions = list(function_blocks(contract))
         initializers = [function for function in functions if function.name == "initialize"]
         for initializer in initializers:
-            if re.search(r"\b(?:owner|admin)\s*=", initializer.code_body) and not re.search(
-                r"initializer|onlyInitializing|initialized|_initialized|\binitialized\s*=", initializer.code_header + initializer.code_body
+            if re.search(r"\b(?:owner|admin)\s*=", initializer.code_body) and not _has_repeat_guard(
+                initializer.code_header, initializer.code_body
             ):
                 findings.append(
                     _finding(root, source_path, contract, initializer.start,

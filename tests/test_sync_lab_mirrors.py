@@ -47,6 +47,17 @@ class SyncLabMirrorTests(unittest.TestCase):
                     self.assertIn(relative.as_posix(), result.stdout)
                     mirror.write_bytes(original)
 
+    def test_sync_check_detects_obsolete_mirrors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            for name in ("scripts", "src", "test", "labs"):
+                shutil.copytree(ROOT / name, scratch / name)
+            obsolete = scratch / "labs/lab-03-flash-loan/src/Obsolete.sol"
+            obsolete.write_text("// stale mirror\n")
+            result = run_check(scratch)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("labs/lab-03-flash-loan/src/Obsolete.sol", result.stdout)
+
     def assert_sync_check_detects_drift(self, path: Path, label: str):
         result = run_check()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

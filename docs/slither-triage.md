@@ -6,7 +6,10 @@ filename is not evidence that a finding is harmless. Each exception identifies
 one finding, describes its concrete behavior and assumptions, and cites test or
 source evidence.
 
-The previous allowlist was reviewed entry by entry. None remains suppressed:
+The previous allowlist was reviewed entry by entry. The table below is a
+historical record of withdrawn suppressions; those rows are not current
+exceptions. Current exceptions appear only under “Accepted findings” and are
+time-bounded with owner and evidence.
 
 | Previous entry | Decision and evidence |
 | --- | --- |
@@ -22,8 +25,11 @@ The previous allowlist was reviewed entry by entry. None remains suppressed:
 | `SafeSplitter` / `reentrancy-eth` | Removed. Fix 4 uses independent pull claims; `test/LoopDoS.t.sol` covers claiming and distribution without payee calls. |
 | `SafeUupsVault` / `controlled-delegatecall` | Removed. Owner gating alone does not prove an upgrade target safe, so the detector remains visible. |
 
-Slither 0.11.6 ran a real scan and produced 115 detector results. The report is
-at `~/workspace/evm-audit-lab-fix/slither-reports/slither-2026-11-21.json`.
+Slither 0.11.6 ran a real scan and produced 115 detector results. The sanitized
+baseline report is committed at
+[`docs/slither-baseline-2026-11-21.json`](slither-baseline-2026-11-21.json),
+so maintainers can retrieve and re-run the triage without a machine-specific
+home-directory path.
 
 ## Accepted findings (2026-11-21)
 
