@@ -23,7 +23,9 @@ HOOK_ENTRY = re.compile(
     r"onERC1155BatchReceived|onERC721Received)\s*\("
 )
 LOCAL_DECLARATION = re.compile(
-    r"(?:^|[;{}])\s*(?:"
+    r"(?:^|[;{}])\s*"
+    r"(?!(?:delete|return|emit|require|assert|revert|if|else|for|while|do|"
+    r"assembly|unchecked|break|continue|throw|new)\b)(?:"
     r"u?int\d*|address(?:\s+payable)?|bool|bytes\d*|string|"
     r"[A-Za-z_]\w*(?:\s*\[\s*\])*"
     r")\s+(?:(?:memory|storage|calldata)\s+)?([A-Za-z_]\w*)\s*(?==|;)"
@@ -88,10 +90,30 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
     return findings
 
 
-def _local_declarations(body: str) -> dict[str, list[int]]:
-    declarations: dict[str, list[int]] = {}
+def _local_declarations(body: str) -> dict[str, list[tuple[int, int]]]:
+    scope_ends: dict[int, int] = {}
+    scopes: list[int] = []
+    braces = list(re.finditer(r"[{}]", body))
+    for brace in braces:
+        if brace.group() == "{":
+            scopes.append(brace.start())
+        elif scopes:
+            scope_ends[scopes.pop()] = brace.start()
+
+    declarations: dict[str, list[tuple[int, int]]] = {}
+    scopes = []
+    brace_index = 0
     for match in LOCAL_DECLARATION.finditer(body):
-        declarations.setdefault(match.group(1), []).append(match.start(1))
+        start = match.start(1)
+        while brace_index < len(braces) and braces[brace_index].start() < start:
+            brace = braces[brace_index]
+            if brace.group() == "{":
+                scopes.append(brace.start())
+            elif scopes:
+                scopes.pop()
+            brace_index += 1
+        end = scope_ends.get(scopes[-1], len(body)) if scopes else len(body)
+        declarations.setdefault(match.group(1), []).append((start, end))
     return declarations
 
 
@@ -104,15 +126,17 @@ def _storage_write_pattern(state_names: set[str]) -> re.Pattern[str] | None:
     )
 
 
-def _is_shadowed(name: str, position: int, local_declarations: dict[str, list[int]]) -> bool:
-    return any(start <= position for start in local_declarations.get(name, []))
+def _is_shadowed(
+    name: str, position: int, local_declarations: dict[str, list[tuple[int, int]]]
+) -> bool:
+    return any(start <= position <= end for start, end in local_declarations.get(name, []))
 
 
 def _storage_write_after(
     body: str,
     offset: int,
     state_names: set[str],
-    local_declarations: dict[str, list[int]],
+    local_declarations: dict[str, list[tuple[int, int]]],
 ) -> bool:
     pattern = _storage_write_pattern(state_names)
     return bool(

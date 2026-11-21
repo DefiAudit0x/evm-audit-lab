@@ -503,5 +503,51 @@ class DetectorMinorTests(unittest.TestCase):
         self.assertEqual([item.contract for item in findings], ["Child"])
 
 
+    def test_p1_inherited_storage_write_after_local_scope_ends(self):
+        source = """
+        contract Base {
+            uint256 internal scratch;
+        }
+        contract Child is Base {
+            function update(address receiver) external {
+                (bool ok,) = receiver.call("");
+                require(ok);
+                { uint256 scratch = 1; }
+                scratch = 1;
+            }
+        }
+        """
+        findings = reentrancy.detect_source(ROOT, self.path, source)
+        self.assertEqual([item.contract for item in findings], ["Child"])
+        local_only = source.replace("}\n                scratch = 1;", "scratch = 1; }")
+        self.assertEqual(reentrancy.detect_source(ROOT, self.path, local_only), [])
+
+    def test_p2_statement_keywords_do_not_shadow_inherited_storage(self):
+        source = """
+        contract Base {
+            uint256 internal balance;
+        }
+        contract Child is Base {
+            function update(address receiver) external {
+                delete balance;
+                (bool ok,) = receiver.call("");
+                require(ok);
+                balance = 1;
+            }
+        }
+        """
+        findings = reentrancy.detect_source(ROOT, self.path, source)
+        self.assertEqual([item.contract for item in findings], ["Child"])
+        for keyword in (
+            "delete", "return", "emit", "require", "assert", "revert", "if", "for",
+            "while", "assembly", "unchecked", "break", "continue",
+        ):
+            with self.subTest(keyword=keyword):
+                self.assertEqual(reentrancy._local_declarations(f"{keyword} balance;"), {})
+        for type_name in ("uint256", "address payable", "CustomContract", "uint256[]"):
+            with self.subTest(type_name=type_name):
+                self.assertIn("balance", reentrancy._local_declarations(f"{type_name} balance;"))
+
+
 if __name__ == "__main__":
     unittest.main()
