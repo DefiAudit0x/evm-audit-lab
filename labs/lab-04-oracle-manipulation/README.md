@@ -35,8 +35,8 @@ The test:
 2. Warps time forward 2 hours — the oracle is now stale.
 3. Attacker deposits 1 ETH (real value: $2,000 if ETH stayed at $2,000; but assume real market price crashed to $500).
 4. The protocol credits 1 ETH collateral at the stale $2,000 price → collateral value = $2,000.
-5. Attacker borrows $1,500 (75% LTV) — but their collateral is only worth $500 at the real market price.
-6. The protocol is now undercollateralized by $1,000.
+5. The protocol accepts $1,500 of debt (75% LTV) — but the collateral is only worth $500 at the assumed real market price.
+6. The recorded debt exceeds that assumed collateral value by $1,000. This model only updates debt accounting; no loan asset is transferred and no realized profit is demonstrated.
 
 ## Impact
 
@@ -46,35 +46,37 @@ The test:
 | **High** | Lending protocol without staleness check, on L1 with reliable oracle | Latent risk — exploitable when oracle next goes stale |
 | **Medium** | Yield strategy that harvests based on stale price | Wrong harvest, loss of yield |
 
-## Remediation
+## Remediation demonstrated by this example
 
-Combine the following checks (see `SafeLending.sol`):
+[`SafeLending.sol`](../../src/SafeLending.sol) is an educational debt-accounting
+model. It requires a positive price, a nonzero `updatedAt` timestamp that is
+not in the future and is less than one hour old, and a price above a fixed
+minimum. It also requires the ETH deposit to match the credited collateral
+and caps cumulative debt. It does not transfer a loan asset.
 
-```solidity
-(, int256 price, uint256 startedAt, uint256 updatedAt, uint256 answeredInRound)
-    = oracle.latestRoundData();
+`SafeLending` validates round integrity by requiring `answeredInRound >= roundId`
+and a nonzero `updatedAt`. It normalizes feed decimal scaling to 18 decimals,
+rejects feeds with more than 18 decimals, and checks for scaling overflow.
 
-// 1. Price must be positive.
-require(price > 0, "invalid price");
+`ConfiguredSafeLending` adds optional checks when nonzero feed addresses are
+configured: L2 sequencer status must be up, the recovery timestamp must be
+nonzero and not in the future, and recovery must be more than one hour ago.
+It also validates deviation from a TWAP reference price: the reference must be
+available and nonzero, quote the same pair at 18 decimals, and the primary
+price must be within 10% of it. Passing a zero sequencer or TWAP address disables
+that optional check.
 
-// 2. Round must have been answered.
-require(updatedAt != 0, "round not complete");
-require(answeredInRound >= startedAt, "stale round");
-
-// 3. Staleness check.
-require(block.timestamp - updatedAt < MAX_STALENESS, "stale oracle");
-
-// 4. Sanity lower bound (catches broken feeds returning 0).
-require(uint256(price) >= MIN_PRICE, "price too low");
-```
-
-**On L2s**, additionally check the [sequencer uptime feed](https://docs.chain.link/data-feeds/l2-sequencer-feeds):
-
-```solidity
-(, int256 sequencerUp, uint256 sequencerStartedAt,,) = sequencerUptimeFeed.latestRoundData();
-require(sequencerUp == 0, "sequencer down");
-require(block.timestamp - sequencerStartedAt > GRACE_PERIOD, "sequencer grace period");
-```
+The test double [`FakeOracle.sol`](../../src/shared/FakeOracle.sol) supplies
+18-decimal prices and matching round IDs. The tests in
+[`StaleOracle.t.sol`](../../test/StaleOracle.t.sol) use mocked feed responses to
+exercise round integrity, 8-decimal normalization, unsupported decimals,
+sequencer downtime and recovery grace periods, and TWAP availability and
+deviation boundaries. They also cover stale, future, and zero timestamps,
+nonpositive/below-minimum prices, and the one-hour staleness boundary. A fresh
+price change above the minimum is accepted by the base `SafeLending`; deviation
+checking requires the configured TWAP. These are mocked teaching examples;
+production integrations must configure feeds and policies appropriate to their
+deployment.
 
 ## Regression test
 
@@ -82,7 +84,9 @@ require(block.timestamp - sequencerStartedAt > GRACE_PERIOD, "sequencer grace pe
 forge test --match-contract StaleOracleTest --match-test testCannotBorrowWithStaleOracleSafe -vvv
 ```
 
-The same stale-price call against `SafeLending` must revert with `"stale oracle"` and no debt must accrue.
+The stale-price call against `SafeLending` reverts with `"stale oracle"` and
+no additional debt accrues; see the cases above for the other checks this
+mocked example actually establishes.
 
 ## Related resources
 

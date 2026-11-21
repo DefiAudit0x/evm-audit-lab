@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {VulnerableVault4626} from "../src/VulnerableVault4626.sol";
 import {SafeVault4626} from "../src/SafeVault4626.sol";
+import {HookToken} from "./fixtures/HookToken.sol";
 
 /// @title InflationAttack.t.sol
 /// @notice Lab 11 — Exploit + regression tests for the ERC-4626
@@ -30,14 +31,14 @@ import {SafeVault4626} from "../src/SafeVault4626.sol";
 ///   4. Attacker redeems the single share for essentially the whole vault.
 ///
 /// Remediation (see SafeVault4626):
-///   Virtual shares/assets constants offset both sides of the share math, so
-///   real supply never operates in the degenerate regime and donations move
-///   the price by a dust fraction only.
+///   Equal virtual asset/share offsets soften the large-donation sequence
+///   exercised below; a zero-share check rejects deposits that still round
+///   down to zero. This is not a general inflation-attack guarantee.
 ///
 /// Regression tests:
-///   The same script against SafeVault4626 leaves the victim with shares
-///   within a rounding hair of proportional, and the attacker's donation is
-///   absorbed instead of weaponized.
+///   The same large-donation sequence against SafeVault4626 leaves the victim
+///   with shares within a rounding hair of proportional. A separate 1-wei
+///   donation test proves that tiny deposits can still round to zero and revert.
 contract InflationAttackTest is Test {
     VulnerableVault4626 internal vulnerable;
     SafeVault4626 internal safe;
@@ -114,6 +115,73 @@ contract InflationAttackTest is Test {
         uint256 attackerTake = safe.withdraw(seedShares);
         assertLt(attackerTake, VICTIM_DEPOSIT / 100, "donation must not be weaponizable");
     }
+
+    function testSafeVaultCanStillRejectOneWeiAfterDonation() public {
+        MockToken token = new MockToken();
+        safe = new SafeVault4626(address(token));
+        address tinyAttacker = makeAddr("tiny-attacker");
+        address tinyVictim = makeAddr("tiny-victim");
+        deal(address(token), tinyAttacker, 2);
+        deal(address(token), tinyVictim, 1);
+
+        vm.startPrank(tinyAttacker);
+        token.approve(address(safe), 1);
+        safe.deposit(1);
+        token.transfer(address(safe), 1);
+        vm.stopPrank();
+
+        vm.prank(tinyVictim);
+        token.approve(address(safe), 1);
+        vm.prank(tinyVictim);
+        vm.expectRevert(bytes("zero shares"));
+        safe.deposit(1);
+
+        assertEq(token.balanceOf(tinyVictim), 1, "rejected deposit keeps victim funds");
+        assertEq(safe.shares(tinyVictim), 0);
+    }
+
+    function testSafeVaultPricesSharesFromMeasuredReceiptAndRejectsFeeTokens() public {
+        TaxedMockToken token = new TaxedMockToken(1_000);
+        safe = new SafeVault4626(address(token));
+        address depositor = makeAddr("taxed-depositor");
+        token.mint(depositor, 100);
+        vm.prank(depositor);
+        token.approve(address(safe), 100);
+
+        vm.prank(depositor);
+        vm.expectRevert(bytes("fee token unsupported"));
+        safe.deposit(100);
+
+        assertEq(safe.totalShares(), 0);
+        assertEq(safe.shares(depositor), 0);
+        assertEq(token.balanceOf(address(safe)), 0, "rejected taxed receipt rolls back");
+    }
+
+    function testSafeVaultBlocksNestedDepositAndWithdrawalCallbacks() public {
+        HookToken token = new HookToken();
+        safe = new SafeVault4626(address(token));
+        address depositor = makeAddr("hook-depositor");
+        token.mint(depositor, 10 ether);
+        token.mint(address(token), 1);
+        token.approveFromSelf(address(safe), 1);
+        vm.prank(depositor);
+        token.approve(address(safe), 10 ether);
+
+        token.configureCallback(address(safe), abi.encodeWithSignature("deposit(uint256)", 1), false, true);
+        vm.prank(depositor);
+        uint256 minted = safe.deposit(10 ether);
+        assertTrue(token.callbackAttempted());
+        assertFalse(token.lastCallbackSucceeded(), "nested deposit must fail under the shared lock");
+        assertEq(safe.shares(depositor), minted);
+
+        token.configureCallback(address(safe), abi.encodeWithSignature("deposit(uint256)", 1), true, false);
+        vm.prank(depositor);
+        safe.withdraw(minted);
+        assertTrue(token.callbackAttempted());
+        assertFalse(token.lastCallbackSucceeded(), "nested deposit during withdrawal must fail");
+        assertEq(safe.shares(depositor), 0);
+        assertEq(safe.totalShares(), 0);
+    }
 }
 
 contract MockToken {
@@ -145,5 +213,42 @@ contract MockToken {
         balanceOf[from] -= amount;
         balanceOf[to] += amount;
         return true;
+    }
+}
+
+contract TaxedMockToken {
+    uint256 public immutable feeBps;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    constructor(uint256 feeBps_) {
+        feeBps = feeBps_;
+    }
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        _deliver(msg.sender, to, amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        uint256 allowed = allowance[from][msg.sender];
+        allowance[from][msg.sender] = allowed - amount;
+        _deliver(from, to, amount);
+        return true;
+    }
+
+    function _deliver(address from, address to, uint256 amount) private {
+        uint256 fee = (amount * feeBps) / 10_000;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount - fee;
     }
 }

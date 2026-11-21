@@ -1,48 +1,58 @@
-# Lab 03 — Flash Loan Price Manipulation
+# Lab 03 — Flash Loan Price Manipulation (Reserve-Manipulation Model)
 
 > ⚠️ The `VulnerableSwap.sol` contract is intentionally unsafe and must not be deployed. Run it only in a local Foundry test environment.
+
+> **Model scope:** this lab demonstrates reserve and spot-price manipulation
+> only. `VulnerableSwap` changes synthetic reserve values; it does not transfer
+> tokens, obtain or repay a flash loan, charge a fee, call a downstream
+> consumer, or measure protocol loss or attacker profit. Its executable test
+> establishes only the reserve and spot-quote changes described below.
 
 ## Threat model
 
 - **Asset at risk:** any protocol that reads on-chain spot prices (lending protocols, perpetuals, synthetic assets, leveraged yield farming).
-- **Privileged actor:** none — this is a permissionless exploit.
-- **Untrusted actor:** anyone with access to a flash loan provider (Aave, Balancer, dYdX). The attacker needs **zero upfront capital**.
+- **Privileged actor:** none. Any caller can invoke the synthetic reserve update.
+- **Modeled actor:** any caller can supply an amount directly to the synthetic `swap` function. This model does not establish flash-loan availability or capital requirements.
 
 ## Violated invariant
 
 > "The on-chain spot price reflects the fair market price."
 
-Spot reserves on an AMM can be moved arbitrarily within a single transaction. Any protocol that consumes the spot price as a price feed can be exploited before the transaction ends — and the attacker can repay the flash loan in the same transaction.
+The model shows that a spot quote derived from reserves changes when the
+synthetic reserves change. A real protocol that consumes a manipulable spot
+price may be exposed, but this lab does not implement or measure that consumer
+or an end-to-end exploit.
 
 ## Attack diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Single transaction (block N)                                │
+│  Synthetic reserve-state transition (not a flash loan)        │
 │                                                              │
-│  1. Attacker borrows 1,000,000 token A from Aave.           │
-│  2. Attacker swaps all of it into VulnerableSwap.            │
-│     → reserveA jumps 100x, spot price drops 100x.           │
-│  3. Attacker calls LendingProtocol.depositCollateral(B)      │
-│     which reads the manipulated price and over-credits       │
-│     the attacker's collateral value.                         │
-│  4. Attacker borrows the maximum against the inflated        │
-│     collateral.                                              │
-│  5. Attacker repays the flash loan (1,000,000 A + fee).      │
-│  6. Transaction commits. LendingProtocol is now              │
-│     undercollateralized.                                     │
+│  1. Start with synthetic reserves A=10,000, B=10,000.        │
+│  2. Call swap(1,000,000 A).                                  │
+│     → reserveA=1,010,000; reserveB≈99.0099.                 │
+│  3. The modeled spot quote changes from 1.0 to ≈0.00009803.  │
+│  4. The test reads reserves and the quote only.               │
+│     No token, loan, fee, repayment, or consumer is modeled.   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Minimal reproduction
 
 ```bash
-forge test --match-contract FlashLoanTest --match-test testExploitFlashLoanPriceManipulation -vvv
+forge test --match-contract FlashLoanTest --match-test testReserveManipulationModelChangesSpotPrice -vvv
 ```
 
-The test shows that a single swap of 1,000,000 A (against initial reserves of 10,000 A / 10,000 B) drops the spot price by **more than 90%**.
+The test starts with synthetic reserves of 10,000 A / 10,000 B, applies a
+modeled input of 1,000,000 A, checks the resulting reserve values, and verifies
+that the spot quote falls by **more than 90%**. It does not execute a flash
+loan or demonstrate downstream loss or attacker profit.
 
 ## Impact
+
+The following are potential consequences in a separate protocol that trusts
+the manipulated spot price; they are not outcomes measured by this lab.
 
 | Severity | Conditions | Outcome |
 | --- | --- | --- |
@@ -52,13 +62,21 @@ The test shows that a single swap of 1,000,000 A (against initial reserves of 10
 
 ## Remediation
 
-Use a **TWAP oracle** (Uniswap V3 `observe`, Chainlink price feed with a heartbeat, or a custom TWAP). See `SafeSwap.sol`.
+For a real protocol, use a **TWAP oracle** (Uniswap V3 `observe`, Chainlink
+price feed with a heartbeat, or a custom TWAP) rather than trusting a
+manipulable spot quote. See `SafeSwap.sol`.
 
-**Why TWAP works:** The attacker must hold the manipulated position across multiple blocks. Each block they hold the position, they expose themselves to other traders arbitraging the price back. The cost of manipulation grows roughly with `manipulation_size × time_held × volatility`.
+**Why TWAP helps:** A cumulative TWAP assigns weight according to how long a
+price was in effect, so a same-block change has zero elapsed-time weight. A
+sustained manipulated price contributes proportionally over time.
 
-**Why Chainlink works:** Chainlink aggregates prices off-chain from multiple independent sources, with a configurable heartbeat. Single-block on-chain manipulation does not affect the aggregated value.
+**Why Chainlink can help:** A suitably configured feed uses an external price
+source rather than this pool's current reserve ratio. Its heartbeat and
+validation assumptions still need to fit the consuming protocol.
 
-**Why a spot oracle fails:** Spot price = current reserves ratio. Manipulating reserves within one transaction manipulates the price, with no time for arbitrage to correct it.
+**Why a spot oracle is exposed:** Spot price = current reserves ratio. A
+reserve change immediately changes the quote, with no time dimension to
+attenuate a transient change.
 
 ## Regression test
 
@@ -66,7 +84,16 @@ Use a **TWAP oracle** (Uniswap V3 `observe`, Chainlink price feed with a heartbe
 forge test --match-contract FlashLoanTest --match-test testTWAPResistsSingleBlockManipulation -vvv
 ```
 
-The same swap amount against `SafeSwap` must not move the TWAP by more than 5%.
+`SafeSwap` accumulates the spot price multiplied by the time it was in effect.
+It keeps at most two checkpoints, at least 30 minutes apart, with `uint256`
+timestamps. Reads use the newest checkpoint that is at least 30 minutes old.
+During warm-up, the oracle reverts with `insufficient observation history`.
+
+The regression checks that a swap at the observation boundary leaves the
+same-block TWAP exactly unchanged. Once time elapses, the new price contributes
+in proportion to its duration. After a full period at that price, the newest
+checkpoint matures and the average reflects the new price for the entire
+window.
 
 ## Related resources
 

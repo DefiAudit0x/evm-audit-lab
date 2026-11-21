@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {IERC20} from "./shared/IERC20.sol";
+
 /// @title VulnerableRouter
 /// @notice Lab 10 — Intentionally vulnerable educational example.
 /// @dev DO NOT DEPLOY. An airdrop-style claims router that calls
@@ -9,10 +11,6 @@ pragma solidity ^0.8.24;
 ///      reverting make the router record a claim that never paid out —
 ///      the user's entitlement is erased and the tokens stay in the
 ///      router forever.
-interface IERC20 {
-    function transfer(address to, uint256 amount) external returns (bool);
-}
-
 contract VulnerableRouter {
     IERC20 public immutable token;
     mapping(address => uint256) public claimable;

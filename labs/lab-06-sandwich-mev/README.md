@@ -30,8 +30,9 @@ net: attacker +5.42 A, victim -4.9 B vs the signed price
 ```
 
 The attacker needs no special access — only priority-fee bidding and a
-node that streams the mempool. The victim's slippage *is* the attacker's
-profit.
+node that streams the mempool. The victim's slippage can fund an attacker's
+profit; the result depends on trade sizes, reserves, fees, and the caller's
+minimum output.
 
 ## Minimal reproduction
 
@@ -43,19 +44,20 @@ forge test --match-contract SandwichTest --match-test testVulnerableAmmIsSandwic
 
 | Severity | Conditions | Outcome |
 | --- | --- | --- |
-| **High** | Public mempool + no on-chain slippage bound + volatile pair | Deterministic extraction from every large trade |
-| **Medium** | Slippage bound present but set loose by front-ends | Attacker extracts up to the tolerated slippage |
+| **High** | Public mempool + no on-chain slippage bound + volatile pair | A sandwich can execute without a caller-selected output floor |
+| **Medium** | Slippage bound present but loose | Some sandwiches can remain profitable while execution stays above the minimum |
 
 ## Remediation
 
 `SafeAmm.sol` enforces both bounds protocol-side:
 
-1. **`minAmountOut`** — the caller states the worst acceptable execution.
-   A front-run that pushes the price beyond the bound reverts the victim's
-   transaction instead of executing it; the attacker's round trip then
-   pays the pool fee twice with no victim to subsidize it.
-2. **`deadline`** — a transaction that lands late reverts instead of
-   executing at a stale, attacker-chosen price.
+1. **`minAmountOut`** — the caller states the minimum acceptable output.
+   The AMM reverts if the calculated output is below that amount. A smaller
+   front-run can leave output above the minimum, so the bound limits loss to
+   the caller's chosen tolerance; it does not eliminate profitable
+   sandwiches or prove that the minimum is a fair price.
+2. **`deadline`** — a transaction that lands after the chosen timestamp
+   reverts. It does not protect against ordering before that deadline.
 
 ### Additional defenses
 
@@ -72,11 +74,18 @@ forge test --match-contract SandwichTest --match-test testVulnerableAmmIsSandwic
 
 ```bash
 forge test --match-contract SandwichTest --match-test testSafeAmmBlocksSandwich -vvv
+forge test --match-contract SandwichTest --match-test testSmallSandwichCanProfitWithinSlippageBound -vvv
 forge test --match-contract SandwichTest --match-test testSafeAmmRevertsOnExpiredDeadline -vvv
 ```
 
-The sandwich cannot execute against `SafeAmm`: the victim's swap reverts
-with `SlippageExceeded`, and the unmatched attacker round trip loses the fee.
+`testSafeAmmBlocksSandwich` proves that the configured 50 A front-run pushes
+the victim's quote below `fairOut - 0.5 B`, causing `SlippageExceeded`.
+`testSmallSandwichCanProfitWithinSlippageBound` proves that a 1 A front-run
+can remain inside the same tolerance, execute, and profit the attacker. It
+checks the realized loss (`fairOut - victimOut`) against the allowed loss
+(`fairOut - victimMin`) and verifies the victim receives at least `victimMin`.
+These tests describe those trade sizes and reserves; they do not establish a
+general sandwich-prevention guarantee.
 
 ## Related resources
 

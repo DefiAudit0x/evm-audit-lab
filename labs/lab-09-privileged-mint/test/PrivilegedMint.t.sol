@@ -100,6 +100,8 @@ contract PrivilegedMintTest is Test {
     }
 
     function testSafeMintEnforcesCap() public {
+        // Fund the cap-sized issuance so this isolates the lifetime cap.
+        vm.deal(address(safe), CAP);
         vm.prank(teamMinter);
         safe.mint(teamMinter, CAP);
         assertEq(safe.totalSupply(), CAP, "cap-sized mint accepted");
@@ -119,5 +121,61 @@ contract PrivilegedMintTest is Test {
 
         assertEq(teamMinter.balance, before + 1 ether, "redeem pays 1:1");
         assertEq(address(safe).balance, RESERVE - 1 ether, "reserve reduced exactly by the redemption");
+    }
+
+    function testSafeMintRejectsUnbackedSupply() public {
+        vm.prank(teamMinter);
+        safe.mint(teamMinter, 1 ether);
+        vm.prank(teamMinter);
+        vm.expectRevert(SafeMint.InsufficientBacking.selector);
+        safe.mint(attacker, RESERVE);
+        assertEq(safe.totalSupply(), 1 ether);
+        assertEq(safe.totalMinted(), 1 ether);
+        assertEq(safe.balanceOf(attacker), 0);
+        assertEq(address(safe).balance, RESERVE);
+        vm.prank(teamMinter);
+        safe.mint(teamMinter, RESERVE - 1 ether);
+        vm.prank(teamMinter);
+        safe.redeem(RESERVE);
+        assertEq(safe.totalSupply(), 0);
+        assertEq(safe.totalMinted(), RESERVE);
+        assertEq(address(safe).balance, 0);
+    }
+
+    function testSafeMintCannotRecycleLifetimeCap() public {
+        vm.deal(address(this), 10 ether);
+        SafeMint capped = new SafeMint{value: 10 ether}(10 ether, 5 ether);
+        capped.setMinter(teamMinter, true);
+        vm.prank(teamMinter);
+        capped.mint(teamMinter, 5 ether);
+        vm.prank(teamMinter);
+        capped.redeem(5 ether);
+        vm.prank(teamMinter);
+        vm.expectRevert(SafeMint.CapExceeded.selector);
+        capped.mint(teamMinter, 1);
+        assertEq(capped.totalSupply(), 0);
+        assertEq(capped.totalMinted(), 5 ether);
+        assertEq(capped.balanceOf(teamMinter), 0);
+        assertEq(address(capped).balance, 5 ether);
+    }
+
+    function testSafeMintRejectsZeroRecipient() public {
+        vm.prank(teamMinter);
+        vm.expectRevert(SafeMint.InvalidRecipient.selector);
+        safe.mint(address(0), 1 ether);
+        assertEq(safe.totalSupply(), 0);
+        assertEq(safe.totalMinted(), 0);
+        assertEq(safe.balanceOf(address(0)), 0);
+    }
+
+    function testSafeMintOverflowingAmountUsesCapError() public {
+        vm.prank(teamMinter);
+        safe.mint(teamMinter, 1 ether);
+        vm.prank(teamMinter);
+        vm.expectRevert(SafeMint.CapExceeded.selector);
+        safe.mint(teamMinter, type(uint256).max);
+        assertEq(safe.totalSupply(), 1 ether);
+        assertEq(safe.totalMinted(), 1 ether);
+        assertEq(safe.balanceOf(teamMinter), 1 ether);
     }
 }

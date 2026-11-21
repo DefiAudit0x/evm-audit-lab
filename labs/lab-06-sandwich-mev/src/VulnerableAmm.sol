@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {IERC20} from "./shared/IERC20.sol";
+
 /// @title VulnerableAmm
 /// @notice Lab 06 — Intentionally vulnerable educational example.
 /// @dev DO NOT DEPLOY. `swap()` executes at whatever price is live at the
 ///      moment of execution and accepts no slippage bound or deadline, so
 ///      any transaction can be sandwiched for profit.
-interface IERC20 {
-    function transfer(address to, uint256 amount) external returns (bool);
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-}
-
 contract VulnerableAmm {
     uint256 public constant FEE_NUMERATOR = 997;
     uint256 public constant FEE_DENOMINATOR = 1000;

@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "Upgradeable Proxy Storage Collision",
+  "threat_model": "A proxy administrator slot collides with implementation storage, allowing delegated implementation writes to corrupt proxy control state.",
+  "assumptions": [
+    "The example uses delegatecall and a simplified proxy storage layout.",
+    "The attacker can invoke the vulnerable delegated behavior but has no privileged proxy role initially.",
+    "The test's storage collision is the demonstrated property; it does not validate an arbitrary proxy implementation."
+  ],
+  "invariant": "Implementation storage writes cannot overwrite proxy administration state.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-07-proxy-storage-collision/src/VulnerableProxy.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-07-proxy-storage-collision/src/SafeProxy.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testVulnerableProxyAdminIsClobbered",
+      "path": "labs/lab-07-proxy-storage-collision/test/ProxyCollision.t.sol"
+    },
+    {
+      "name": "testSafeProxyKeepsAdminSeparate",
+      "path": "labs/lab-07-proxy-storage-collision/test/ProxyCollision.t.sol"
+    },
+    {
+      "name": "testSafeProxyRejectsCodeLessDeployment",
+      "path": "labs/lab-07-proxy-storage-collision/test/ProxyCollision.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "manual-review",
+      "expectation": "the intended storage-layout collision is verified by the regression test",
+      "path": "src/VulnerableProxy.sol"
+    }
+  ]
+}

@@ -5,19 +5,19 @@
 ## Threat model
 
 - **Asset at risk:** every asset the proxy custodies — the takeover ends in an arbitrary-logic upgrade.
-- **Privileged actor:** nobody yet — that is the bug: `owner` is unset until `initialize` runs, and nothing restricts who runs it.
-- **Untrusted actor:** anyone watching the mempool for the proxy-creation transaction, or scanning chain state for uninitialized proxies.
-- **Preconditions:** a deployed-but-uninitialized proxy, or an initialization transaction that can be frontrun.
+- **Privileged actor:** the intended owner initializes the proxy first, but the vulnerable initializer allows anyone to overwrite that owner later.
+- **Untrusted actor:** any caller able to reach the proxy.
+- **Preconditions:** the proxy uses `VulnerableUupsVault`, whose initializer has no one-shot guard.
 
 ## Violated invariant
 
 > "Privileged protocol state must be established exactly once, atomically with deployment, by the deployer."
 
-The unguarded `initialize` can be called by anyone, any number of times — and because the implementation's constructor never locks its own storage, the raw implementation can be re-initialized too (the self-destruct variant can brick every proxy pointing at it).
+The unguarded `initialize` can be called by anyone, any number of times. The bug is broader than a first-caller race: an attacker can overwrite a legitimate owner's address after initialization.
 
 ```solidity
 function initialize(address owner_) external {   // no one-shot guard
-    owner = owner_;                              // first caller wins
+    owner = owner_;                              // any caller can overwrite it
 }
 
 function upgradeToAndCall(address newImpl, bytes calldata data)
@@ -25,21 +25,20 @@ function upgradeToAndCall(address newImpl, bytes calldata data)
 { /* EIP-1967 slot write + optional delegatecall */ }
 ```
 
-## Attack anatomy (three-transaction takeover)
+## Attack anatomy (takeover after legitimate initialization)
 
 ```
-deployer: new Erc1967Proxy(impl, "")     -> proxy exists, owner == address(0)
-                                          (the two-step deployment mistake)
+deployer: new Erc1967Proxy(impl, initialize(deployer))
+                                          -> proxy is legitimately initialized
 
-attacker: proxy.initialize(attacker)     -> owner := attacker
+attacker: proxy.initialize(attacker)     -> owner := attacker (overwritten)
 attacker: proxy.upgradeToAndCall(
               evilImpl, drain(attacker)) -> arbitrary logic in proxy context
-                                          -> proxy balance: 0
+                                          -> proxy balance transferred to attacker
 ```
 
-Frontrunning completes the attack even when the deployer intends to
-initialize promptly: the attacker's identical transaction with a higher tip
-lands first.
+The executable regression test funds the proxy, performs these calls, and
+asserts that the attacker receives the full balance.
 
 ## Remediation
 
@@ -51,8 +50,7 @@ the creation transaction — no window exists, not even a one-block one.
 ## Minimal reproduction
 
 ```bash
-forge test --match-contract UupsTakeoverTest --match-test testUninitializedProxyIsTakenOverAndDrained -vvv
-forge test --match-contract UupsTakeoverTest --match-test testVulnerableImplementationCanBeReinitialized -vvv
+forge test --match-contract UupsTakeoverTest --match-test testVulnerableProxyCanBeTakenOverAndDrained -vvv
 ```
 
 ## Regression test

@@ -5,6 +5,25 @@ import {Test} from "forge-std/Test.sol";
 import {VulnerableSignature} from "../src/VulnerableSignature.sol";
 import {SafeSignature} from "../src/SafeSignature.sol";
 
+contract PayoutReceiver {
+    SafeSignature internal immutable vault;
+    bool public acceptsPayment;
+    uint256 public observedNonce;
+
+    constructor(SafeSignature vault_) {
+        vault = vault_;
+    }
+
+    function acceptPayment() external {
+        acceptsPayment = true;
+    }
+
+    receive() external payable {
+        require(acceptsPayment, "payment refused");
+        observedNonce = vault.nonces(address(this));
+    }
+}
+
 /// @title SignatureReplay.t.sol
 /// @notice Lab 08 — Exploit + regression tests for signature authorization.
 ///
@@ -110,12 +129,57 @@ contract SignatureReplayTest is Test {
 
         safe.withdraw(victim, PAYOUT, block.timestamp + 1 hours, v, r, s);
         assertEq(victim.balance, PAYOUT, "honest flow pays once");
+        assertEq(safe.nonces(victim), 1);
 
         // Replaying the exact same call reverts: the nonce moved on.
         vm.expectRevert(SafeSignature.InvalidSignature.selector);
         safe.withdraw(victim, PAYOUT, block.timestamp + 1 hours, v, r, s);
 
         assertEq(victim.balance, PAYOUT, "no extra payout from the replay");
+        assertEq(safe.nonces(victim), 1);
+    }
+
+    function testSafeSignatureFollowsCurrentChainId() public {
+        uint256 newChain = block.chainid + 1;
+        (uint8 v, bytes32 r, bytes32 s) = _signTypedPayout(AUTHORITY_KEY, safe, victim, PAYOUT);
+        vm.chainId(newChain);
+        assertEq(
+            safe.domainSeparator(),
+            keccak256(
+                abi.encode(
+                    keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                    keccak256("SafeSignature"),
+                    keccak256("1"),
+                    newChain,
+                    address(safe)
+                )
+            )
+        );
+        vm.expectRevert(SafeSignature.InvalidSignature.selector);
+        safe.withdraw(victim, PAYOUT, block.timestamp + 1 hours, v, r, s);
+        assertEq(safe.nonces(victim), 0);
+
+        (v, r, s) = _signTypedPayout(AUTHORITY_KEY, safe, victim, PAYOUT);
+        safe.withdraw(victim, PAYOUT, block.timestamp + 1 hours, v, r, s);
+        assertEq(victim.balance, PAYOUT);
+    }
+
+    function testSafeSignatureConsumesNonceBeforePayoutAndRollsBackOnFailure() public {
+        PayoutReceiver receiver = new PayoutReceiver(safe);
+        address recipient = address(receiver);
+        (uint8 v, bytes32 r, bytes32 s) = _signTypedPayout(AUTHORITY_KEY, safe, recipient, PAYOUT);
+        uint256 deadline = block.timestamp + 1 hours;
+
+        vm.expectRevert(SafeSignature.TransferFailed.selector);
+        safe.withdraw(recipient, PAYOUT, deadline, v, r, s);
+        assertEq(safe.nonces(recipient), 0);
+        assertEq(address(safe).balance, VAULT_FUNDING);
+
+        receiver.acceptPayment();
+        safe.withdraw(recipient, PAYOUT, deadline, v, r, s);
+        assertEq(receiver.observedNonce(), 1);
+        assertEq(recipient.balance, PAYOUT);
+        assertEq(safe.nonces(victim), 0);
     }
 
     function testSafeSignatureRejectsExpired() public {
@@ -153,6 +217,7 @@ contract SignatureReplayTest is Test {
 
         vm.expectRevert(SafeSignature.MalleableSignature.selector);
         safe.withdraw(victim, PAYOUT, block.timestamp + 1 hours, flippedV, r, flippedS);
+        assertEq(safe.nonces(victim), 0);
     }
 
     uint256 private constant SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;

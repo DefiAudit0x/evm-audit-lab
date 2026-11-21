@@ -30,8 +30,8 @@ import {SafeRouter} from "../src/SafeRouter.sol";
 ///      token balance is still 0 — the entitlement is gone forever.
 ///
 /// Remediation (see SafeRouter):
-///   Check the boolean and `revert TransferFailed()` before any state
-///   change. A reverted claim is fully retryable once the token recovers.
+///   Restrict allocations, consume claims before transfer, and check the
+///   boolean. Reverting restores accounting so failed claims remain retryable.
 ///
 /// Regression tests:
 ///   The failing token reverts the claim on SafeRouter with state intact;
@@ -93,6 +93,11 @@ contract UncheckedReturnTest is Test {
         // State untouched — the claim is fully retryable.
         assertEq(failingSafe.claimable(claimant), ALLOCATION, "entitlement preserved");
         assertEq(failingSafe.claimed(claimant), 0, "no phantom claim recorded");
+        assertEq(failingSafe.totalClaimable(), ALLOCATION);
+        assertEq(bad.balanceOf(address(failingSafe)), ALLOCATION);
+        // A failed transfer also restores the reentrancy guard.
+        failingSafe.setClaimable(claimant, ALLOCATION - 1);
+        assertEq(failingSafe.totalClaimable(), ALLOCATION - 1);
     }
 
     function testSafeRouterHappyPathPaysOut() public {
@@ -117,6 +122,101 @@ contract UncheckedReturnTest is Test {
         honestRouter.claim();
 
         assertEq(good.balanceOf(claimant), ALLOCATION, "honest token pays out fine");
+    }
+
+    function testSafeRouterRejectsUnauthorizedAllocation() public {
+        safe.setClaimable(claimant, ALLOCATION);
+        vm.prank(claimant);
+        vm.expectRevert(SafeRouter.NotOwner.selector);
+        safe.setClaimable(claimant, 0);
+        vm.prank(claimant);
+        vm.expectRevert(SafeRouter.NotOwner.selector);
+        safe.setClaimable(address(123), ALLOCATION);
+        assertEq(safe.owner(), address(this));
+        assertEq(safe.claimable(claimant), ALLOCATION);
+        assertEq(safe.claimable(address(123)), 0);
+        assertEq(safe.totalClaimable(), ALLOCATION);
+    }
+
+    function testSafeRouterBoundsAggregateAllocationsAndReplacement() public {
+        safe.setClaimable(claimant, ALLOCATION - 1);
+        safe.setClaimable(address(123), 1);
+        vm.expectRevert(SafeRouter.InsufficientBacking.selector);
+        safe.setClaimable(address(123), 2);
+        assertEq(safe.claimable(address(123)), 1);
+        assertEq(safe.totalClaimable(), ALLOCATION);
+        safe.setClaimable(claimant, 0);
+        safe.setClaimable(address(123), ALLOCATION);
+        assertEq(safe.totalClaimable(), ALLOCATION);
+        vm.prank(address(123));
+        safe.claim();
+        assertEq(safe.totalClaimable(), 0);
+        assertEq(good.balanceOf(address(123)), ALLOCATION);
+    }
+
+    function testSafeRouterCannotClaimTwice() public {
+        safe.setClaimable(claimant, ALLOCATION);
+        vm.prank(claimant);
+        safe.claim();
+        vm.prank(claimant);
+        vm.expectRevert(SafeRouter.NothingToClaim.selector);
+        safe.claim();
+        assertEq(safe.claimed(claimant), ALLOCATION);
+        assertEq(safe.totalClaimable(), 0);
+    }
+
+    function testSafeRouterCallbackCannotDoubleClaim() public {
+        CallbackToken token = new CallbackToken();
+        SafeRouter router = new SafeRouter(address(token));
+        CallbackClaimant receiver = new CallbackClaimant(router);
+        token.mint(address(router), 2 * ALLOCATION);
+        router.setClaimable(address(receiver), ALLOCATION);
+        router.setClaimable(claimant, ALLOCATION);
+        receiver.claim(false);
+        assertTrue(receiver.attempted());
+        assertEq(receiver.failure(), SafeRouter.ReentrantCall.selector);
+        assertEq(receiver.observedClaimable(), 0);
+        assertEq(token.balanceOf(address(receiver)), ALLOCATION);
+        assertEq(router.claimed(address(receiver)), ALLOCATION);
+        assertEq(router.totalClaimable(), ALLOCATION);
+        assertEq(token.balanceOf(address(router)), ALLOCATION);
+        vm.prank(claimant);
+        router.claim();
+        assertEq(router.totalClaimable(), 0);
+    }
+
+    function testSafeRouterCallbackRevertRollsBackClaim() public {
+        CallbackToken token = new CallbackToken();
+        SafeRouter router = new SafeRouter(address(token));
+        CallbackClaimant receiver = new CallbackClaimant(router);
+        token.mint(address(router), ALLOCATION);
+        router.setClaimable(address(receiver), ALLOCATION);
+        vm.expectRevert(SafeRouter.ReentrantCall.selector);
+        receiver.claim(true);
+        assertEq(router.claimable(address(receiver)), ALLOCATION);
+        assertEq(router.claimed(address(receiver)), 0);
+        assertEq(router.totalClaimable(), ALLOCATION);
+        assertEq(token.balanceOf(address(receiver)), 0);
+        assertEq(token.balanceOf(address(router)), ALLOCATION);
+        receiver.claim(false);
+        assertEq(router.totalClaimable(), 0);
+    }
+
+    function testSafeRouterRejectsTransferThatUndercollateralizesOthers() public {
+        CallbackToken token = new CallbackToken();
+        SafeRouter router = new SafeRouter(address(token));
+        token.mint(address(router), 2 * ALLOCATION);
+        router.setClaimable(claimant, ALLOCATION);
+        router.setClaimable(address(123), ALLOCATION);
+        token.setExtraDebit(1);
+        vm.prank(claimant);
+        vm.expectRevert(SafeRouter.InsufficientBacking.selector);
+        router.claim();
+        assertEq(router.claimable(claimant), ALLOCATION);
+        assertEq(router.claimed(claimant), 0);
+        assertEq(router.totalClaimable(), 2 * ALLOCATION);
+        assertEq(token.balanceOf(address(router)), 2 * ALLOCATION);
+        assertEq(token.balanceOf(claimant), 0);
     }
 }
 
@@ -147,5 +247,55 @@ contract GoodToken {
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
         return true;
+    }
+}
+
+/// @dev Adversarial token with recipient callbacks and configurable excess debit.
+contract CallbackToken {
+    mapping(address => uint256) public balanceOf;
+    uint256 public extraDebit;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function setExtraDebit(uint256 amount) external {
+        extraDebit = amount;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        balanceOf[msg.sender] -= amount + extraDebit;
+        balanceOf[to] += amount;
+        if (to.code.length > 0) CallbackClaimant(to).onTokensReceived();
+        return true;
+    }
+}
+
+contract CallbackClaimant {
+    SafeRouter public immutable router;
+    bool public attempted;
+    bool private propagateFailure;
+    bytes4 public failure;
+    uint256 public observedClaimable;
+
+    constructor(SafeRouter router_) {
+        router = router_;
+    }
+
+    function claim(bool propagate) external {
+        propagateFailure = propagate;
+        router.claim();
+    }
+
+    function onTokensReceived() external {
+        attempted = true;
+        observedClaimable = router.claimable(address(this));
+        if (propagateFailure) {
+            router.claim();
+        } else {
+            (bool ok, bytes memory result) = address(router).call(abi.encodeCall(SafeRouter.claim, ()));
+            require(!ok, "double claim succeeded");
+            failure = bytes4(result);
+        }
     }
 }

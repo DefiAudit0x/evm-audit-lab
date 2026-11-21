@@ -1,0 +1,14 @@
+# forge-std vendoring record
+#
+# The vendored copy in lib/forge-std was committed in
+# ccac0a749bdb776c357a1c49a9c40ca39f00865d (2026-08-30, "build: vendor
+# forge-std in place of the submodule"). Its upstream forge-std commit was
+# never recorded, and it matches NO release tag (checked v1.9.0, v1.9.4,
+# v1.9.5, v1.9.6, v1.10.0, v1.11.0 by content hash of src/Test.sol), so no
+# upstream SHA is claimed here. Do NOT write the evm-audit-lab HEAD here.
+#
+# Content identity of the vendored tree (git tree hash, stable across
+# checkouts; recompute with `git rev-parse HEAD:lib/forge-std`):
+forge-std-tree: 9100c00cd1221d4cdaa6869c0e105621de433a47
+vendored-at: ccac0a749bdb776c357a1c49a9c40ca39f00865d
+upstream-commit: unknown (not a release tag)

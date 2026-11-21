@@ -24,13 +24,6 @@ import {SafeUupsVault} from "../src/SafeUupsVault.sol";
 ///   "Privileged protocol state must be established exactly once, atomically
 ///   with deployment, by the deployer."
 ///
-/// Reproduction (two-step deploy, empty init data):
-///   1. Deploy proxy with EMPTY init data (the two-step mistake).
-///   2. Fund the proxy with 10 ETH.
-///   3. Attacker calls `initialize(attacker)` — succeeds, owner := attacker.
-///   4. Attacker calls `upgradeToAndCall(evilImpl, drain(attacker))`.
-///   5. The drain executes in the proxy's context: attacker holds 10 ETH.
-///
 /// Remediation (see SafeUupsVault):
 ///   An `initialized` flag makes the initializer one-shot, the constructor
 ///   locks the implementation's own storage, and the proxy is initialized
@@ -50,34 +43,122 @@ contract UupsTakeoverTest is Test {
         attacker = makeAddr("attacker");
     }
 
-    function testUninitializedProxyIsTakenOverAndDrained() public {
-        VulnerableUupsVault impl = new VulnerableUupsVault();
+    bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
-        // The two-step mistake: proxy deployed with empty init data.
+    function testProxyRejectsEmptyInitialization() public {
+        SafeUupsVault impl = new SafeUupsVault();
+        vm.expectRevert(bytes("empty init data"));
+        new Erc1967Proxy(address(impl), "");
+    }
+
+    function testProxyChecksCodeBeforeInitData() public {
+        vm.expectRevert(bytes("no code"));
+        new Erc1967Proxy(deployer, "");
+    }
+
+    function testInitializerSeesImplementationSlot() public {
+        VaultV2 impl = new VaultV2();
+        Erc1967Proxy proxy =
+            new Erc1967Proxy(address(impl), abi.encodeCall(VaultV2.checkImplementation, (address(impl))));
+        assertEq(vm.load(address(proxy), IMPLEMENTATION_SLOT), bytes32(uint256(uint160(address(impl)))));
+    }
+
+    function testProxyBubblesInitializerError() public {
+        VaultV2 impl = new VaultV2();
+        vm.expectRevert(abi.encodeWithSelector(VaultV2.UnexpectedImplementation.selector, address(impl)));
+        new Erc1967Proxy(address(impl), abi.encodeCall(VaultV2.checkImplementation, (address(0))));
+    }
+
+    function testProxyRejectsZeroOwner() public {
+        SafeUupsVault impl = new SafeUupsVault();
+        vm.expectRevert(bytes("zero owner"));
+        new Erc1967Proxy(address(impl), abi.encodeCall(SafeUupsVault.initialize, (address(0))));
+    }
+
+    function testImplementationRejectsDirectUpgrade() public {
+        SafeUupsVault impl = new SafeUupsVault();
+        SafeUupsVault next = new SafeUupsVault();
+        assertEq(impl.proxiableUUID(), IMPLEMENTATION_SLOT);
+        vm.expectRevert(bytes("not delegated"));
+        impl.upgradeToAndCall(address(next), "");
+    }
+
+    function testOwnerCanUpgradeAndPreserveState() public {
+        (Erc1967Proxy proxy, SafeUupsVault vault) = _deployVault();
+        VaultV2 next = new VaultV2();
         vm.prank(deployer);
-        Erc1967Proxy proxy = new Erc1967Proxy(address(impl), "");
-        vm.deal(address(proxy), PROXY_FUNDING);
+        vault.upgradeToAndCall(address(next), abi.encodeCall(VaultV2.setVersion, (2)));
 
-        // Attacker claims ownership in the open window.
+        assertEq(vault.owner(), deployer);
+        assertTrue(vault.initialized());
+        assertEq(address(proxy).balance, PROXY_FUNDING);
+        assertEq(VaultV2(payable(address(proxy))).version(), 2);
+
+        SafeUupsVault third = new SafeUupsVault();
+        vm.prank(deployer);
+        vault.upgradeToAndCall(address(third), "");
+        assertEq(vm.load(address(proxy), IMPLEMENTATION_SLOT), bytes32(uint256(uint160(address(third)))));
+    }
+
+    function testOwnerCannotUpgradeToIncompatibleTargets() public {
+        (Erc1967Proxy proxy, SafeUupsVault vault) = _deployVault();
+        bytes32 original = vm.load(address(proxy), IMPLEMENTATION_SLOT);
+        WrongUuid wrong = new WrongUuid();
+        MissingUuid missing = new MissingUuid();
+
+        vm.startPrank(deployer);
+        vm.expectRevert(bytes("no code"));
+        vault.upgradeToAndCall(deployer, "");
+        vm.expectRevert(bytes("incompatible implementation"));
+        vault.upgradeToAndCall(address(missing), "");
+        vm.expectRevert(bytes("incompatible implementation"));
+        vault.upgradeToAndCall(address(wrong), "");
+        vm.expectRevert(bytes("delegated UUID"));
+        vault.proxiableUUID();
+        vm.expectRevert(bytes("incompatible implementation"));
+        vault.upgradeToAndCall(address(proxy), "");
+        vm.stopPrank();
+
+        assertEq(vm.load(address(proxy), IMPLEMENTATION_SLOT), original);
+    }
+
+    function testUpgradeCallFailureBubblesErrorAndRollsBack() public {
+        (Erc1967Proxy proxy, SafeUupsVault vault) = _deployVault();
+        bytes32 original = vm.load(address(proxy), IMPLEMENTATION_SLOT);
+        VaultV2 next = new VaultV2();
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(VaultV2.UnexpectedImplementation.selector, address(next)));
+        vault.upgradeToAndCall(address(next), abi.encodeCall(VaultV2.checkImplementation, (address(0))));
+        assertEq(vm.load(address(proxy), IMPLEMENTATION_SLOT), original);
+    }
+
+    function _deployVault() internal returns (Erc1967Proxy proxy, SafeUupsVault vault) {
+        SafeUupsVault impl = new SafeUupsVault();
+        proxy = new Erc1967Proxy(address(impl), abi.encodeCall(SafeUupsVault.initialize, (deployer)));
+        vm.deal(address(proxy), PROXY_FUNDING);
+        vault = SafeUupsVault(payable(address(proxy)));
+    }
+
+    function testVulnerableProxyCanBeTakenOverAndDrained() public {
+        VulnerableUupsVault impl = new VulnerableUupsVault();
+        Erc1967Proxy proxy = new Erc1967Proxy(address(impl), abi.encodeCall(VulnerableUupsVault.initialize, (deployer)));
+        vm.deal(address(proxy), PROXY_FUNDING);
+        VulnerableUupsVault vault = VulnerableUupsVault(payable(address(proxy)));
+
+        assertEq(vault.owner(), deployer);
+
+        // The unguarded initializer permits ownership reassignment after
+        // legitimate initialization, so the attacker can take over the proxy.
         vm.prank(attacker);
-        VulnerableUupsVault(payable(address(proxy))).initialize(attacker);
+        vault.initialize(attacker);
+        assertEq(vault.owner(), attacker);
 
         EvilUupsImplementation evil = new EvilUupsImplementation();
         vm.prank(attacker);
-        VulnerableUupsVault(payable(address(proxy)))
-            .upgradeToAndCall(address(evil), abi.encodeCall(EvilUupsImplementation.drain, (payable(attacker))));
+        vault.upgradeToAndCall(address(evil), abi.encodeCall(EvilUupsImplementation.drain, (payable(attacker))));
 
-        assertEq(attacker.balance, PROXY_FUNDING, "proxy drained by attacker");
         assertEq(address(proxy).balance, 0);
-    }
-
-    function testVulnerableImplementationCanBeReinitialized() public {
-        VulnerableUupsVault impl = new VulnerableUupsVault();
-
-        // The implementation's own storage is also unguarded.
-        vm.prank(attacker);
-        impl.initialize(attacker);
-        assertEq(impl.owner(), attacker);
+        assertEq(attacker.balance, PROXY_FUNDING);
     }
 
     function testSafeProxyInitializationIsAtomicAndLocked() public {
@@ -108,3 +189,30 @@ contract UupsTakeoverTest is Test {
         assertEq(address(proxy).balance, PROXY_FUNDING, "funds untouched");
     }
 }
+
+contract VaultV2 is SafeUupsVault {
+    error UnexpectedImplementation(address actual);
+
+    uint256 public version;
+
+    function setVersion(uint256 version_) external onlyOwner {
+        version = version_;
+    }
+
+    function checkImplementation(address expected) external view {
+        bytes32 slot = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+        address actual;
+        assembly {
+            actual := sload(slot)
+        }
+        if (actual != expected) revert UnexpectedImplementation(actual);
+    }
+}
+
+contract WrongUuid {
+    function proxiableUUID() external pure returns (bytes32) {
+        return bytes32(0);
+    }
+}
+
+contract MissingUuid {}

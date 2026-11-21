@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "Unbounded Loop Denial of Service",
+  "threat_model": "A permissionless registrant grows the payee list until a distribution loop exceeds the block gas budget and can no longer progress.",
+  "assumptions": [
+    "Payee registration is permissionless in the vulnerable example.",
+    "The attack is about gas-scaled liveness and does not require stealing funds.",
+    "The remediated example uses bounded crediting batches and independent pull claims."
+  ],
+  "invariant": "Untrusted growth in payee state cannot make another payee's distribution or withdrawal permanently unreachable.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-12-loop-dos/src/VulnerableSplitter.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-12-loop-dos/src/SafeSplitter.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testVulnerableDistributeBricksPastGasLimit",
+      "path": "labs/lab-12-loop-dos/test/LoopDoS.t.sol"
+    },
+    {
+      "name": "testSafeSplitterCreditsLargeListThroughBoundedBatches",
+      "path": "labs/lab-12-loop-dos/test/LoopDoS.t.sol"
+    },
+    {
+      "name": "testRejectingAndGasGuzzlingPayeesCannotBlockHonestClaim",
+      "path": "labs/lab-12-loop-dos/test/LoopDoS.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "manual-review",
+      "expectation": "the relevant gas-growth and withdrawal-liveness property is verified by tests",
+      "path": "src/VulnerableSplitter.sol"
+    }
+  ]
+}

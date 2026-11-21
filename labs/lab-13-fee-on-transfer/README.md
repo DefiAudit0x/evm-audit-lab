@@ -40,9 +40,12 @@ honest backing is drained.
 ## Remediation
 
 `SafeFotVault` credits by balance delta — the observed change in
-`token.balanceOf(address(this))` across the transfer — so claims never
-exceed received value regardless of token behavior. Checked transfers plus a
-`received > 0` guard round out the pattern.
+`token.balanceOf(address(this))` across the transfer. The regression token
+reports balances honestly, takes its fee from the amount delivered, and debits
+the vault by exactly the requested withdrawal amount. The vault also shares a
+reentrancy lock between deposit and withdrawal. Rebases, dishonest balance
+reports, and tokens that debit the vault by more than requested are outside
+this model.
 
 ## Minimal reproduction
 
@@ -57,6 +60,8 @@ forge test --match-contract FeeOnTransferTest --match-test testSafeVaultCreditsO
 ```
 
 Both depositors on `SafeFotVault` are credited exactly what arrived (90
-each), both withdraw in full, and the vault ends solvent at zero.
+each), both withdraw in full, and the vault ends solvent at zero. The callback
+regression also proves nested deposit/withdraw attempts do not increase
+claims beyond the measured transfer.
 
 Companion report: [Audit-Reports/012 — Fee-on-Transfer Token Accounting Break](https://github.com/DefiAudit0x/Audit-Reports/blob/main/012-fee-on-transfer-accounting.md).

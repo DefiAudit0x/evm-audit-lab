@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "name": "Reentrancy",
+  "threat_model": "An untrusted contract depositor re-enters an ETH vault through its receive hook before the withdrawal ledger is updated, potentially taking more ETH than its credit.",
+  "assumptions": [
+    "ETH is the asset held and paid by the vault.",
+    "The attacker can call withdraw from a contract receive hook.",
+    "The example focuses on same-contract reentrancy and does not model cross-contract accounting."
+  ],
+  "invariant": "A caller can withdraw at most the amount credited to that caller.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "src/VulnerableVault.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "src/SafeVault.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testVulnerableVaultCanBeReentered",
+      "path": "test/Reentrancy.t.sol"
+    },
+    {
+      "name": "testSafeVaultRejectsReentry",
+      "path": "test/Reentrancy.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "reentrancy-eth",
+      "expectation": "expected on VulnerableVault; absent from SafeVault",
+      "path": "src/VulnerableVault.sol"
+    },
+    {
+      "detector": "reentrancy-eth",
+      "expectation": "must not fire on the remediated contract",
+      "path": "src/SafeVault.sol"
+    }
+  ]
+}

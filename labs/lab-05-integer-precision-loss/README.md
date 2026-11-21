@@ -57,12 +57,15 @@ forge test --match-contract PrecisionTest --match-test testVulnerablePoolInflati
 
 ## Remediation
 
-Several independent defenses; `SafePool.sol` implements the first:
+Several independent defenses; `SafePool.sol` rejects zero-share deposits and
+seeds a fixed dead-share amount:
 
-1. **Dead shares on first deposit** — mint a large, fixed amount of shares
-   to `address(0)` when the pool is empty. To zero out a victim's mint the
-   attacker must donate ~`DEAD_SHARES × victim deposit`, and the donation is
-   unrecoverable: the attack becomes a guaranteed net loss.
+1. **Fixed dead shares on first deposit** — `SafePool` mints 1,000,000
+   shares to `address(0)` when the pool is empty. In the tested 1-wei seed,
+   10-ETH donation, and 5-ETH victim sequence, this leaves the victim with
+   positive shares and limits their redemption shortfall to 0.1%. A large
+   first deposit can still own nearly all live shares, and fixed dead shares
+   do not guarantee every donation strategy is unprofitable.
 2. **Round up on mint, round down on burn** (`Math.ceilDiv`) — deposits can
    never mint zero shares.
 3. **Virtual shares / decimal offset** (OpenZeppelin ERC4626) — a virtual
@@ -82,9 +85,11 @@ Several independent defenses; `SafePool.sol` implements the first:
 forge test --match-contract PrecisionTest --match-test testSafePoolResistsInflation -vvv
 ```
 
-The same attack against `SafePool` leaves the victim with shares and at
-least their deposit back, while the attacker exits with less than they
-contributed.
+`testSafePoolResistsInflation` proves the selected attack sequence leaves
+the victim with shares and redemption within 0.1% of the deposit. The
+additional `testLargeFirstDepositorCanStillOwnNearlyAllLiveShares` shows
+that a 1-ETH first depositor owns over 99% of live shares despite the fixed
+dead-share amount.
 
 ## Related resources
 

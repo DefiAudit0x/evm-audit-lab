@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "name": "Unchecked ERC-20 Return Values",
+  "threat_model": "A token returns false for transfer; a router that ignores the result can discard a user's claim while reporting success.",
+  "assumptions": [
+    "The token interface returns a boolean as specified by the example.",
+    "The failure fixture returns false without transferring tokens.",
+    "The remediated router trusts the configured token's balance reporting."
+  ],
+  "invariant": "A claim is cleared only when the payout succeeds, and aggregate claim liabilities remain backed by the token balance.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-10-unchecked-return-value/src/VulnerableRouter.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-10-unchecked-return-value/src/SafeRouter.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testVulnerableRouterSilentFailureDestroysEntitlement",
+      "path": "labs/lab-10-unchecked-return-value/test/UncheckedReturn.t.sol"
+    },
+    {
+      "name": "testSafeRouterRevertsOnFailedTransfer",
+      "path": "labs/lab-10-unchecked-return-value/test/UncheckedReturn.t.sol"
+    },
+    {
+      "name": "testSafeRouterCannotClaimTwice",
+      "path": "labs/lab-10-unchecked-return-value/test/UncheckedReturn.t.sol"
+    },
+    {
+      "name": "testSafeRouterCallbackCannotDoubleClaim",
+      "path": "labs/lab-10-unchecked-return-value/test/UncheckedReturn.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "unchecked-transfer",
+      "expectation": "expected on VulnerableRouter; absent from SafeRouter",
+      "path": "src/VulnerableRouter.sol"
+    },
+    {
+      "detector": "unchecked-transfer",
+      "expectation": "must not fire on the remediated contract",
+      "path": "src/SafeRouter.sol"
+    }
+  ]
+}

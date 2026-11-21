@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "name": "Reserve Manipulation and TWAP",
+  "threat_model": "A caller changes synthetic AMM reserves so a consumer that trusts the instantaneous reserve ratio could read a manipulated spot price.",
+  "assumptions": [
+    "This is a reserve-manipulation model: no tokens, flash loan, fee, repayment, downstream consumer, or protocol loss is modeled.",
+    "Reserve values are synthetic state updated by the example swap function.",
+    "The TWAP model uses elapsed time between observations and is not a production oracle."
+  ],
+  "invariant": "A price used for valuation should not be determined solely by a transient, caller-controlled reserve change.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-03-flash-loan/src/VulnerableSwap.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-03-flash-loan/src/SafeSwap.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testReserveManipulationModelChangesSpotPrice",
+      "path": "labs/lab-03-flash-loan/test/FlashLoan.t.sol"
+    },
+    {
+      "name": "testTWAPResistsSingleBlockManipulation",
+      "path": "labs/lab-03-flash-loan/test/FlashLoan.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "manual-review",
+      "expectation": "Slither has no detector for this reserve-price economic property",
+      "path": "src/VulnerableSwap.sol"
+    }
+  ]
+}

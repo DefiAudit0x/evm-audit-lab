@@ -61,9 +61,11 @@ Several independent defenses; `SafeMint.sol` implements the first two:
 1. **Explicit, enforced role** — `mint` reverts with `NotMinter` unless the
    caller was granted the role by the admin via `setMinter`. The capability
    is the role mapping, not a convention.
-2. **Hard supply cap** (`maxSupply`) — even a compromised or malicious
-   legitimate minter cannot create more than the cap, bounding worst-case
-   damage instead of trusting key hygiene forever.
+2. **Lifetime issuance cap** (`maxSupply`) — even a compromised or malicious
+   legitimate minter cannot issue beyond the cap. `SafeMint` independently
+   requires current outstanding supply plus the new mint to fit the ETH
+   reserve. The constructor may set a cap larger than the reserve; in that
+   case backing limits outstanding claims before the lifetime cap is reached.
 3. **Checks-effects-interactions in `redeem`** — state is updated before
    the ETH transfer, so a reentrant redemption sees consistent balances.
 4. **Custom errors** (`NotAdmin`, `NotMinter`, `CapExceeded`) — cheaper

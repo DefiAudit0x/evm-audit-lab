@@ -2,17 +2,17 @@
 pragma solidity ^0.8.24;
 
 /// @title SafeMint
-/// @notice Lab 09 — Remediated: role-based minting with an admin that
-///         grants/revokes minters, a hard supply cap, and checks-effects-
-///         interactions ordering in `redeem`.
-/// @dev Two independent defenses: (1) `mint` reverts unless the caller was
-///      explicitly granted the minter role by the admin — the role itself
-///      is the capability; (2) `maxSupply` bounds the damage a compromised
-///      or malicious minter can do.
+/// @notice Lab 09 — Role-gated minting, a lifetime issuance cap, and ETH
+///         backing for all outstanding 1:1 redeemable claims.
+/// @dev Assumes one ETH of reserve backs each supply unit. The admin controls
+///      minters; issuance has a lifetime cap and outstanding supply cannot
+///      exceed current ETH backing. This is an educational model, not a
+///      production token or a proof that admin/minter keys are secure.
 contract SafeMint {
     address public admin;
     uint256 public immutable maxSupply;
     uint256 public totalSupply;
+    uint256 public totalMinted;
 
     mapping(address => bool) public isMinter;
     mapping(address => uint256) public balanceOf;
@@ -20,6 +20,8 @@ contract SafeMint {
     error NotAdmin();
     error NotMinter();
     error CapExceeded();
+    error InsufficientBacking();
+    error InvalidRecipient();
 
     event MinterSet(address indexed minter, bool allowed);
     event Minted(address indexed to, uint256 amount);
@@ -42,10 +44,16 @@ contract SafeMint {
     }
 
     /// @notice Mint tokens. Requires the explicit minter role and respects
-    ///         the hard supply cap.
+    ///         lifetime issuance cap and available reserve.
     function mint(address to, uint256 amount) external {
         if (!isMinter[msg.sender]) revert NotMinter();
-        if (totalSupply + amount > maxSupply) revert CapExceeded();
+        if (to == address(0)) revert InvalidRecipient();
+        if (amount > maxSupply - totalMinted) revert CapExceeded();
+        if (totalSupply > address(this).balance || amount > address(this).balance - totalSupply) {
+            revert InsufficientBacking();
+        }
+
+        totalMinted += amount;
 
         totalSupply += amount;
         balanceOf[to] += amount;
