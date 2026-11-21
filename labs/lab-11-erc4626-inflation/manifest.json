@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "ERC-4626-Style Inflation Attack",
+  "threat_model": "An early depositor donates assets to a nearly empty vault, inflating the share price so a later deposit rounds down and transfers value to the early depositor.",
+  "assumptions": [
+    "The vault is an ERC-4626-style share-accounting example, not a full IERC4626 implementation.",
+    "The remediated example assumes exact-transfer, non-rebasing assets and rejects deposits that deliver less than requested.",
+    "Virtual asset/share values mitigate the tested donation but do not prevent every inflation scenario."
+  ],
+  "invariant": "Depositors receive shares for measured assets received, and deposits that round to zero shares revert without taking assets.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-11-erc4626-inflation/src/VulnerableVault4626.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-11-erc4626-inflation/src/SafeVault4626.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testVulnerableFirstDepositorAbsorbsVictimDeposit",
+      "path": "labs/lab-11-erc4626-inflation/test/InflationAttack.t.sol"
+    },
+    {
+      "name": "testSafeVaultAbsorbsTheDonation",
+      "path": "labs/lab-11-erc4626-inflation/test/InflationAttack.t.sol"
+    },
+    {
+      "name": "testSafeVaultCanStillRejectOneWeiAfterDonation",
+      "path": "labs/lab-11-erc4626-inflation/test/InflationAttack.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "manual-review",
+      "expectation": "share-price rounding and donation economics are not established by static analysis",
+      "path": "src/VulnerableVault4626.sol"
+    }
+  ]
+}

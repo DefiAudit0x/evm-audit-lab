@@ -29,7 +29,7 @@ contract VulnerableAccess {
     /// @notice VULNERABLE: uses tx.origin instead of msg.sender.
     function withdraw(address payable to, uint256 amount) external {
         require(tx.origin == owner, "not owner");
-        (bool ok, ) = to.call{value: amount}("");
+        (bool ok,) = to.call{value: amount}("");
         require(ok, "transfer failed");
         emit Withdrawal(to, amount);
     }

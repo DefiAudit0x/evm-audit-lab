@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "Integer Precision Loss",
+  "threat_model": "An early depositor exploits integer truncation and donation-sensitive share pricing so a later depositor receives fewer shares than their contribution warrants.",
+  "assumptions": [
+    "The pool uses integer arithmetic and the example token units.",
+    "The tested attack depends on low initial share supply and a donation that changes the live asset balance.",
+    "The remediated example's virtual liquidity softens the demonstrated case but does not prevent every inflation attack."
+  ],
+  "invariant": "Share claims remain proportional to contributed assets within the rounding policy, and a deposit cannot silently mint zero shares.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-05-integer-precision-loss/src/VulnerablePool.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-05-integer-precision-loss/src/SafePool.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testVulnerablePoolInflationStealsDeposit",
+      "path": "labs/lab-05-integer-precision-loss/test/Precision.t.sol"
+    },
+    {
+      "name": "testSafePoolResistsInflation",
+      "path": "labs/lab-05-integer-precision-loss/test/Precision.t.sol"
+    },
+    {
+      "name": "testLargeFirstDepositorCanStillOwnNearlyAllLiveShares",
+      "path": "labs/lab-05-integer-precision-loss/test/Precision.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "manual-review",
+      "expectation": "numeric intent and donation-sensitive share economics are not established by static analysis",
+      "path": "src/VulnerablePool.sol"
+    }
+  ]
+}

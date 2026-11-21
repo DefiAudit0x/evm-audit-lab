@@ -2,14 +2,11 @@
 pragma solidity ^0.8.24;
 
 /// @title SafePool
-/// @notice Lab 05 — Remediated: first deposit mints dead shares, so share
-///         price inflation can no longer be profitable.
-/// @dev The vulnerable pool truncates `minted` to zero once the attacker
-///      inflates `totalAssets`. Here the very first deposit mints
-///      DEAD_SHARES to `address(0)`. An attacker who wants the next
-///      depositor to mint zero shares must donate ~DEAD_SHARES times the
-///      victim's deposit, and the donation itself is unrecoverable — the
-///      attack becomes a guaranteed net loss.
+/// @notice Lab 05 — rejects zero-share deposits and seeds fixed dead shares.
+/// @dev Dead shares increase the donation needed for the tested first-deposit
+///      attack, but do not cap the first depositor's ownership when that
+///      depositor contributes much more than DEAD_SHARES. This model does not
+///      guarantee every donation strategy is unprofitable.
 contract SafePool {
     /// @dev Minted to address(0) on the first deposit. Dilutes any attempt
     ///      to buy an outsized fraction of `totalShares` with a tiny deposit.
@@ -27,8 +24,8 @@ contract SafePool {
 
         uint256 minted;
         if (totalShares == 0) {
-            // First deposit: seed dead shares so no single depositor ever
-            // owns ~100% of the share supply.
+            // First deposit: seed a fixed dead-share amount. A sufficiently
+            // large deposit can still own approximately all live shares.
             totalShares += DEAD_SHARES;
             shares[address(0)] += DEAD_SHARES;
             minted = msg.value;

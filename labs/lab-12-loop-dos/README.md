@@ -41,10 +41,17 @@ there is no per-payee claim(), no sweep(), no removal path — funds frozen
 
 ## Remediation
 
-`SafeSplitter` chunks distribution behind a persisted cursor: each call
-processes at most `maxPayees` entries, so per-call gas is user-bounded and
-independent of list size, and repeated calls walk the list to completion.
-(Alternatives: pull payments per payee, or a hard cap on list size.)
+`SafeSplitter` uses bounded batches only to move each registered deposit
+into that payee's claim ledger. `distribute(maxPayees)` makes no external
+calls, accepts batches from 1 through 256, and can be resumed with its
+persisted cursor. Each payee later withdraws independently with `claim()`
+or `withdrawTo()`. A failed claim leaves the liability intact and cannot
+stop another payee from claiming. Each withdrawal transfer is capped at
+30,000 gas; a recipient that cannot receive ETH within that cap can redirect
+its claim with `withdrawTo()`.
+
+Registration requires a positive value. Each address is added to the payee
+list once, even after its current balance has been claimed.
 
 ## Minimal reproduction
 
@@ -55,11 +62,12 @@ forge test --match-contract LoopDoSTest --match-test testVulnerableDistributeBri
 ## Regression test
 
 ```bash
-forge test --match-contract LoopDoSTest --match-test testSafeSplitterDrainsFullyThroughBoundedCalls -vvv
+forge test --match-contract LoopDoSTest --match-test testSafeSplitterCreditsLargeListThroughBoundedBatches -vvv
 ```
 
-The identical list on `SafeSplitter` drains fully through bounded 250-payee
-calls, and every registered payee — including the honest one — is paid
-exactly once.
+The identical list on `SafeSplitter` is credited through bounded batches,
+then the honest payee claims independently. Additional tests show that a
+rejecting or gas-consuming payee retains its liability and cannot block the
+honest claim.
 
 Companion report: [Audit-Reports/011 — Unbounded Loop Denial of Service](https://github.com/DefiAudit0x/Audit-Reports/blob/main/011-unbounded-loop-dos.md).

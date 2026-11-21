@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "name": "Signature Replay",
+  "threat_model": "An observer reuses a valid authorization signature to repeat a protected payout or use it in a different domain.",
+  "assumptions": [
+    "The signature follows the example's typed message and ECDSA scheme.",
+    "The safe contract binds signatures to the current chain and contract and consumes nonces.",
+    "Private-key compromise and wallet signing interfaces are out of scope."
+  ],
+  "invariant": "A signed authorization is valid only for its intended domain and nonce and can be consumed at most once.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-08-signature-replay/src/VulnerableSignature.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-08-signature-replay/src/SafeSignature.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testVulnerableSignatureSingleSigDrainsVault",
+      "path": "labs/lab-08-signature-replay/test/SignatureReplay.t.sol"
+    },
+    {
+      "name": "testSafeSignaturePaysExactlyOnce",
+      "path": "labs/lab-08-signature-replay/test/SignatureReplay.t.sol"
+    },
+    {
+      "name": "testSafeSignatureFollowsCurrentChainId",
+      "path": "labs/lab-08-signature-replay/test/SignatureReplay.t.sol"
+    },
+    {
+      "name": "testSafeSignatureRejectsMalleableS",
+      "path": "labs/lab-08-signature-replay/test/SignatureReplay.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "manual-review",
+      "expectation": "signature domain, replay, nonce, and malleability semantics require executable tests",
+      "path": "src/VulnerableSignature.sol"
+    }
+  ]
+}

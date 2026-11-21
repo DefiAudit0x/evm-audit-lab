@@ -30,13 +30,16 @@ admin calls proxy.setValue(1)
   -> proxy.admin() == address(1)     <- admin silently replaced
 
 proxy.upgradeTo(x) require(msg.sender == admin)
-  -> reverts for everyone            <- upgradeability bricked
+  -> original admin is rejected     <- admin authority is corrupted
 ```
 
 No special call is needed: a *seemingly harmless* setter executed through
 the proxy corrupts proxy administration. The same primitive can overwrite
 the implementation pointer (slot 1) if the implementation declares two
-variables — turning any state write into arbitrary logic deployment.
+variables — turning any state write into arbitrary logic deployment. Because
+`setValue` is unrestricted, anyone can also write a chosen address to slot 0
+and take over or reassign admin authority; the loss of the original admin's
+access is not necessarily permanent.
 
 ## Minimal reproduction
 
@@ -48,7 +51,7 @@ forge test --match-contract ProxyCollisionTest --match-test testVulnerableProxyA
 
 | Severity | Conditions | Outcome |
 | --- | --- | --- |
-| **Critical** | Proxy metadata in slots the implementation's layout can reach | Admin replaced, upgrade path bricked, or implementation hijacked |
+| **Critical** | Proxy metadata in slots the implementation's layout can reach | Arbitrary admin takeover or reassignment, or implementation hijacking |
 
 ## Remediation
 

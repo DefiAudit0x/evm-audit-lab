@@ -2,8 +2,9 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {VulnerableLending, FakeOracle} from "../src/VulnerableLending.sol";
-import {SafeLending} from "../src/SafeLending.sol";
+import {VulnerableLending} from "../src/VulnerableLending.sol";
+import {FakeOracle} from "../src/shared/FakeOracle.sol";
+import {SafeLending, ConfiguredSafeLending, LendingFeed, LendingTwap} from "../src/SafeLending.sol";
 
 /// @title StaleOracle.t.sol
 /// @notice Lab 04 — Exploit + regression test for stale oracle data.
@@ -11,8 +12,9 @@ import {SafeLending} from "../src/SafeLending.sol";
 /// Lab: Stale Oracle Data
 ///
 /// Threat model:
-///   The Chainlink (or other) oracle stops updating — L2 sequencer
-///   outage, oracle node compromise, or Chainlink multisig pause.
+///   The stale-price test models a feed that stops updating. Additional
+///   regression tests mock round integrity, decimals, L2 sequencer status,
+///   and TWAP deviation checks.
 ///   The lending protocol still reads `latestRoundData` and treats
 ///   the stale price as current. An attacker borrows against
 ///   collateral at the stale (now incorrect) price.
@@ -30,8 +32,9 @@ import {SafeLending} from "../src/SafeLending.sol";
 ///      with $500 of collateral value at the stale $2,000 price.
 ///      Wait — at the stale price, 0.25 ETH = $500, so the attacker
 ///      can borrow $375 (75% LTV). If the real price is $500, then
-///      the attacker's collateral is only worth $125 — they walk
-///      away with a $250 profit.
+///      the attacker's collateral is only worth $125. The recorded
+///      debt exceeds that assumed value by $250; no loan asset is paid
+///      out and no realized profit is demonstrated.
 ///
 /// Remediation:
 ///   Check `block.timestamp - updatedAt < MAX_STALENESS`. Optionally
@@ -67,9 +70,10 @@ contract StaleOracleTest is Test {
         vm.startPrank(attacker);
         vulnerable.deposit{value: 1 ether}(1 ether);
 
-        // At 75% LTV, attacker can borrow $1,500 worth.
-        // Real market price = $500, so collateral is really worth $500.
-        // Attacker borrows $1,500, walks away with $1,000 profit.
+        // At 75% LTV, the protocol accepts $1,500 of debt.
+        // At an assumed real market price of $500, collateral is worth $500.
+        // Recorded debt exceeds that value by $1,000. This only changes debt
+        // accounting: no loan asset is paid out and no realized profit is demonstrated.
         vulnerable.borrow(1_500 ether);
         vm.stopPrank();
 
@@ -89,5 +93,205 @@ contract StaleOracleTest is Test {
         vm.stopPrank();
 
         assertEq(safe.debt(attacker), 0, "no debt should accrue");
+    }
+
+    function testSafeDepositRejectsUnfundedCollateral() public {
+        vm.prank(attacker);
+        vm.expectRevert("invalid deposit");
+        safe.deposit(1 ether);
+        assertEq(safe.collateral(attacker), 0);
+        assertEq(address(safe).balance, 0);
+    }
+
+    function testSafeDepositRejectsZeroAndMismatchedValue() public {
+        vm.deal(attacker, 2 ether);
+        vm.startPrank(attacker);
+        vm.expectRevert("invalid deposit");
+        safe.deposit(0);
+        vm.expectRevert("invalid deposit");
+        safe.deposit{value: 1 ether}(2 ether);
+        vm.expectRevert("invalid deposit");
+        safe.deposit{value: 2 ether}(1 ether);
+        vm.stopPrank();
+        assertEq(safe.collateral(attacker), 0);
+        assertEq(address(safe).balance, 0);
+        assertEq(attacker.balance, 2 ether);
+    }
+
+    function _depositSafe() internal {
+        vm.deal(attacker, 1 ether);
+        vm.prank(attacker);
+        safe.deposit{value: 1 ether}(1 ether);
+    }
+
+    function testSafeBorrowCapsCumulativeDebt() public {
+        _depositSafe();
+        vm.startPrank(attacker);
+        safe.borrow(1_000 ether);
+        vm.expectRevert("exceeds LTV");
+        safe.borrow(501 ether);
+        assertEq(safe.debt(attacker), 1_000 ether);
+        safe.borrow(500 ether);
+        vm.expectRevert("exceeds LTV");
+        safe.borrow(1);
+        vm.stopPrank();
+        assertEq(safe.debt(attacker), 1_500 ether);
+        assertEq(safe.collateral(attacker), 1 ether);
+    }
+
+    function testSafeBorrowRejectsDebtAboveNewLimit() public {
+        _depositSafe();
+        vm.prank(attacker);
+        safe.borrow(1_000 ether);
+        oracle.setStale(1_000 ether, block.timestamp);
+        vm.prank(attacker);
+        vm.expectRevert("exceeds LTV");
+        safe.borrow(1);
+        assertEq(safe.debt(attacker), 1_000 ether);
+    }
+
+    function testSafeOracleRejectsFutureTimestamp() public {
+        _depositSafe();
+        oracle.setStale(2_000 ether, block.timestamp + 1);
+        vm.prank(attacker);
+        vm.expectRevert("future oracle");
+        safe.borrow(1 ether);
+        assertEq(safe.debt(attacker), 0);
+    }
+
+    function testSafeOracleRejectsMissingTimestamp() public {
+        _depositSafe();
+        oracle.setStale(2_000 ether, 0);
+        vm.prank(attacker);
+        // The fake feed has no meaningful round IDs; this exercises only the
+        // SafeLending check that updatedAt is nonzero.
+        vm.expectRevert("round not complete");
+        safe.borrow(1 ether);
+        assertEq(safe.debt(attacker), 0);
+    }
+
+    function testSafeOracleRejectsInvalidPrices() public {
+        _depositSafe();
+        uint256[3] memory prices = [uint256(0), type(uint256).max, safe.MIN_PRICE() - 1];
+        for (uint256 i; i < prices.length; i++) {
+            oracle.setStale(prices[i], block.timestamp);
+            vm.prank(attacker);
+            vm.expectRevert(i == 2 ? bytes("price too low") : bytes("invalid price"));
+            safe.borrow(1 ether);
+            assertEq(safe.debt(attacker), 0);
+        }
+    }
+
+    function testSafeOracleNormalizesEightDecimalFeed() public {
+        _depositSafe();
+        vm.mockCall(address(oracle), abi.encodeCall(LendingFeed.decimals, ()), abi.encode(uint8(8)));
+        oracle.setStale(2_000e8, block.timestamp);
+
+        vm.prank(attacker);
+        safe.borrow(1_500 ether);
+        assertEq(safe.debt(attacker), 1_500 ether);
+    }
+
+    function testSafeOracleRejectsUnsupportedDecimals() public {
+        vm.mockCall(address(oracle), abi.encodeCall(LendingFeed.decimals, ()), abi.encode(uint8(19)));
+        vm.expectRevert("unsupported decimals");
+        safe.borrow(0);
+    }
+
+    function testSafeOracleRequiresAnswerFromCurrentOrLaterRound() public {
+        _depositSafe();
+        bytes memory query = abi.encodeCall(LendingFeed.latestRoundData, ());
+        vm.mockCall(address(oracle), query, abi.encode(uint80(42), int256(2_000 ether), 0, block.timestamp, uint80(41)));
+        vm.prank(attacker);
+        vm.expectRevert("round not complete");
+        safe.borrow(1 ether);
+        vm.mockCall(address(oracle), query, abi.encode(uint80(42), int256(2_000 ether), 0, block.timestamp, uint80(42)));
+        vm.prank(attacker);
+        safe.borrow(1 ether);
+        assertEq(safe.debt(attacker), 1 ether);
+    }
+
+    function testL2OracleChecksSequencerStatusAndRecovery() public {
+        address uptime = address(new FakeOracle(0));
+        safe = new ConfiguredSafeLending(address(oracle), uptime, address(0));
+        _depositSafe();
+        vm.warp(2 hours);
+        oracle.setStale(2_000 ether, block.timestamp);
+
+        _expectSequencerRejection(uptime, 1, 1, "sequencer down");
+        _expectSequencerRejection(uptime, 0, 0, "invalid sequencer timestamp");
+        _expectSequencerRejection(uptime, 0, block.timestamp + 1, "invalid sequencer timestamp");
+        _expectSequencerRejection(uptime, 0, block.timestamp - 1 hours, "sequencer grace period");
+        _mockSequencer(uptime, 0, block.timestamp - 1 hours - 1);
+        vm.prank(attacker);
+        safe.borrow(1 ether);
+        assertEq(safe.debt(attacker), 1 ether);
+    }
+
+    function _mockSequencer(address uptime, int256 status, uint256 startedAt) internal {
+        vm.mockCall(
+            uptime,
+            abi.encodeCall(LendingFeed.latestRoundData, ()),
+            abi.encode(uint80(1), status, startedAt, 0, uint80(1))
+        );
+    }
+
+    function _expectSequencerRejection(address uptime, int256 status, uint256 startedAt, string memory reason)
+        internal
+    {
+        _mockSequencer(uptime, status, startedAt);
+        vm.prank(attacker);
+        vm.expectRevert(bytes(reason));
+        safe.borrow(1 ether);
+        assertEq(safe.debt(attacker), 0);
+    }
+
+    function testOracleRejectsUnavailableOrZeroTwap() public {
+        address referenceFeed = address(new FakeOracle(0));
+        safe = new ConfiguredSafeLending(address(oracle), address(0), referenceFeed);
+        bytes memory query = abi.encodeCall(LendingTwap.getTWAP, ());
+
+        vm.mockCallRevert(referenceFeed, query, abi.encodeWithSignature("Error(string)", "no TWAP history"));
+        vm.expectRevert("no TWAP history");
+        safe.borrow(0);
+        vm.clearMockedCalls();
+
+        vm.mockCall(referenceFeed, query, abi.encode(uint256(0)));
+        vm.expectRevert("invalid TWAP");
+        safe.borrow(0);
+    }
+
+    function testOracleChecksDeviationAgainstTwap() public {
+        address referenceFeed = address(new FakeOracle(0));
+        safe = new ConfiguredSafeLending(address(oracle), address(0), referenceFeed);
+        _depositSafe();
+        vm.mockCall(referenceFeed, abi.encodeCall(LendingTwap.getTWAP, ()), abi.encode(2_000 ether));
+        vm.mockCall(address(oracle), abi.encodeCall(LendingFeed.decimals, ()), abi.encode(uint8(8)));
+
+        oracle.setStale(2_200e8 + 1, block.timestamp);
+        vm.prank(attacker);
+        vm.expectRevert("price deviation");
+        safe.borrow(1 ether);
+        oracle.setStale(1_800e8 - 1, block.timestamp);
+        vm.prank(attacker);
+        vm.expectRevert("price deviation");
+        safe.borrow(1 ether);
+        oracle.setStale(2_200e8, block.timestamp);
+        vm.prank(attacker);
+        safe.borrow(1_650 ether);
+        assertEq(safe.debt(attacker), 1_650 ether);
+    }
+
+    function testSafeOracleStalenessBoundary() public {
+        _depositSafe();
+        uint256 updated = block.timestamp;
+        vm.warp(updated + safe.MAX_STALENESS() - 1);
+        vm.prank(attacker);
+        safe.borrow(1 ether);
+        vm.warp(updated + safe.MAX_STALENESS());
+        vm.prank(attacker);
+        vm.expectRevert("stale oracle");
+        safe.borrow(1 ether);
+        assertEq(safe.debt(attacker), 1 ether);
     }
 }

@@ -9,24 +9,55 @@ on:
 permissions:
   contents: read
 
+env:
+  FOUNDRY_VERSION: "1.9.0"
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
+        with:
+          version: v${{ env.FOUNDRY_VERSION }}
 
       - name: Install Slither (pinned)
         run: pipx install "slither-analyzer==0.11.6"
+      - name: Set up Python
+        uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d
+        with:
+          python-version-file: .python-version
 
-      - name: Run Slither
-        # Slither exits 255 whenever any finding exists — always true here,
-        # because half of the repository is intentionally vulnerable. The
-        # JSON report is what the next step judges.
-        run: slither . --json slither-report.json || true
+      - name: Test audit reporting
+        run: python3 -B -m unittest discover -s .github/scripts -p test_audit_report.py
 
-      - name: Check expectations (lab integrity + safe regression + triage)
-        run: python3 .github/scripts/check_slither.py slither-report.json
+      - name: Run Slither and export research reports
+        shell: bash
+        env:
+          AUDIT_TEST_SEED: "0x13"
+        run: |
+          set -euo pipefail
+          report_dir="$(mktemp -d "${RUNNER_TEMP:?}/slither.XXXXXXXX")"
+          source_revision="$(git rev-parse HEAD)"
+          source_dirty="$(test -n "$(git status --porcelain)" && echo true || echo false)"
+          status=0
+          slither . --fail-none --json "$report_dir/slither.json" || status=$?
+          forge test --force --extra-output storageLayout --fuzz-seed "$AUDIT_TEST_SEED" --json \
+            > "$report_dir/foundry.json" || status=$?
+          python3 -B .github/scripts/audit_report.py "$report_dir/slither.json" \
+            --build-dir out --test-results "$report_dir/foundry.json" --test-seed "$AUDIT_TEST_SEED" \
+            --source-revision "$source_revision" --source-dirty "$source_dirty" \
+            --format all --output-dir "$report_dir" || status=$?
+          python3 -B .github/scripts/check_slither.py "$report_dir/slither.json" || status=$?
+          exit "$status"
+      - name: Preserve analysis artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: slither-${{ github.run_id }}
+          path: ${{ runner.temp }}/slither.*
+          if-no-files-found: ignore

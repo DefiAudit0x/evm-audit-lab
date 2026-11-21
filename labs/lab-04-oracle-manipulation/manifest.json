@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "name": "Stale Oracle Data",
+  "threat_model": "A borrower exploits a lending protocol that accepts an old, invalid, or otherwise unsuitable external price report to overstate collateral value.",
+  "assumptions": [
+    "The feed follows the Chainlink-style round-data interface used by the example.",
+    "The test uses deterministic mock feeds; it does not prove the quality or availability of a live feed.",
+    "The safe example applies configured freshness, decimal, round, sequencer, and deviation checks."
+  ],
+  "invariant": "Collateral valuation uses only a valid, current price within the configured oracle policy.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-04-oracle-manipulation/src/VulnerableLending.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-04-oracle-manipulation/src/SafeLending.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testExploitStaleOracle",
+      "path": "labs/lab-04-oracle-manipulation/test/StaleOracle.t.sol"
+    },
+    {
+      "name": "testCannotBorrowWithStaleOracleSafe",
+      "path": "labs/lab-04-oracle-manipulation/test/StaleOracle.t.sol"
+    },
+    {
+      "name": "testSafeOracleRejectsFutureTimestamp",
+      "path": "labs/lab-04-oracle-manipulation/test/StaleOracle.t.sol"
+    },
+    {
+      "name": "testL2OracleChecksSequencerStatusAndRecovery",
+      "path": "labs/lab-04-oracle-manipulation/test/StaleOracle.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "manual-review",
+      "expectation": "oracle freshness, feed semantics, and economic validity require semantic checks",
+      "path": "src/VulnerableLending.sol"
+    }
+  ]
+}

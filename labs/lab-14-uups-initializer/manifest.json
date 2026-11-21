@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "name": "UUPS Initializer Takeover",
+  "threat_model": "An attacker overwrites the owner of a legitimately initialized vulnerable proxy, upgrades its implementation, and executes arbitrary proxy-context logic to drain funds.",
+  "assumptions": [
+    "The proxy uses EIP-1967 implementation storage and delegatecall initialization.",
+    "The vulnerable initializer permits unconditional ownership reassignment even after legitimate initialization.",
+    "The remediated path initializes atomically with deployment and locks the implementation instance."
+  ],
+  "invariant": "Privileged proxy state is established once by the intended deployer as part of deployment, and only a compatible authorized implementation can replace it.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-14-uups-initializer/src/VulnerableUupsVault.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-14-uups-initializer/src/SafeUupsVault.sol"
+    },
+    "proxy": {
+      "role": "proxy",
+      "path": "labs/lab-14-uups-initializer/src/Erc1967Proxy.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testVulnerableProxyCanBeTakenOverAndDrained",
+      "path": "labs/lab-14-uups-initializer/test/UupsTakeover.t.sol"
+    },
+    {
+      "name": "testSafeProxyInitializationIsAtomicAndLocked",
+      "path": "labs/lab-14-uups-initializer/test/UupsTakeover.t.sol"
+    },
+    {
+      "name": "testProxyRejectsEmptyInitialization",
+      "path": "labs/lab-14-uups-initializer/test/UupsTakeover.t.sol"
+    },
+    {
+      "name": "testOwnerCannotUpgradeToIncompatibleTargets",
+      "path": "labs/lab-14-uups-initializer/test/UupsTakeover.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "controlled-delegatecall",
+      "expectation": "expected on the deliberately vulnerable upgrade path",
+      "path": "src/VulnerableUupsVault.sol"
+    },
+    {
+      "detector": "arbitrary-send-eth",
+      "expectation": "expected on the deliberately vulnerable implementation",
+      "path": "src/VulnerableUupsVault.sol"
+    },
+    {
+      "detector": "manual-review",
+      "expectation": "one-shot initialization and implementation compatibility require semantic tests",
+      "path": "src/VulnerableUupsVault.sol"
+    }
+  ]
+}

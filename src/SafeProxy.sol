@@ -13,6 +13,7 @@ contract SafeProxy {
     bytes32 private constant ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
 
     constructor(address implementation_) {
+        require(implementation_.code.length > 0, "no code");
         _setSlot(IMPLEMENTATION_SLOT, implementation_);
         _setSlot(ADMIN_SLOT, msg.sender);
     }
@@ -27,6 +28,7 @@ contract SafeProxy {
 
     function upgradeTo(address implementation_) external {
         require(msg.sender == _getSlot(ADMIN_SLOT), "not admin");
+        require(implementation_.code.length > 0, "no code");
         _setSlot(IMPLEMENTATION_SLOT, implementation_);
     }
 

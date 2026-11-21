@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "name": "Privileged Minting and Backing",
+  "threat_model": "An unauthorized caller mints redeemable claims or an authorized minter issues more claims than the contract's configured cap and ETH backing support.",
+  "assumptions": [
+    "The example models a privileged mint role and ETH-backed redemption.",
+    "The cap is lifetime issuance and is not recycled after redemption.",
+    "The tests use the native asset and do not model a production token issuance system."
+  ],
+  "invariant": "Only authorized minters issue claims, and outstanding claims remain within both lifetime supply and available backing limits.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-09-privileged-mint/src/VulnerableMint.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-09-privileged-mint/src/SafeMint.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testVulnerableMintAnyoneMintsAndDrainsReserve",
+      "path": "labs/lab-09-privileged-mint/test/PrivilegedMint.t.sol"
+    },
+    {
+      "name": "testSafeMintRequiresMinterRole",
+      "path": "labs/lab-09-privileged-mint/test/PrivilegedMint.t.sol"
+    },
+    {
+      "name": "testSafeMintRejectsUnbackedSupply",
+      "path": "labs/lab-09-privileged-mint/test/PrivilegedMint.t.sol"
+    },
+    {
+      "name": "testSafeMintCannotRecycleLifetimeCap",
+      "path": "labs/lab-09-privileged-mint/test/PrivilegedMint.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "manual-review",
+      "expectation": "authorization and backing policy require semantic review and tests",
+      "path": "src/VulnerableMint.sol"
+    }
+  ]
+}

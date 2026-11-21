@@ -27,9 +27,10 @@ import {SafeProxy, SafeImplV1, SafeImplV2} from "../src/SafeProxy.sol";
 ///   2. Admin calls `proxy.setValue(1)` through the proxy.
 ///      `delegatecall` executes V1's code against proxy storage: slot 0
 ///      — the admin slot — is set to 1.
-///   3. `proxy.admin()` now returns `address(1)`. The real admin fails
-///      `require(msg.sender == admin)` on `upgradeTo`, so upgradeability
-///      is bricked (and any check relying on `admin` is corrupt).
+///   3. `proxy.admin()` now returns `address(1)`. The original admin fails
+///      `require(msg.sender == admin)` on `upgradeTo`, but unrestricted
+///      `setValue` lets anyone write a chosen address to slot 0 and take
+///      over or reassign admin authority.
 ///
 /// Remediation:
 ///   Store proxy metadata in EIP-1967 slots (keccak256-derived, far from
@@ -54,10 +55,27 @@ contract ProxyCollisionTest is Test {
         assertEq(proxy.admin(), address(1), "admin must be clobbered to address(1)");
         assertEq(VulnerableImplV1(address(proxy)).value(), 1, "value read from slot 0");
 
-        // Upgradeability is bricked: neither the deployer nor anyone else
-        // satisfies `require(msg.sender == admin)` anymore.
+        // The original admin cannot upgrade, but anyone can use unrestricted
+        // setValue to take over or reassign admin authority.
+        VulnerableImplV1 replacement = new VulnerableImplV1();
         vm.expectRevert(bytes("not admin"));
-        proxy.upgradeTo(address(new VulnerableImplV1()));
+        proxy.upgradeTo(address(replacement));
+        assertEq(proxy.implementation(), address(impl), "rejected upgrade must preserve implementation");
+    }
+
+    function testSafeProxyRejectsCodeLessDeployment() public {
+        vm.expectRevert(bytes("no code"));
+        new SafeProxy(makeAddr("code-less"));
+    }
+
+    function testSafeProxyRejectsCodeLessUpgrade() public {
+        SafeImplV1 impl = new SafeImplV1();
+        SafeProxy proxy = new SafeProxy(address(impl));
+        address codeLess = makeAddr("code-less");
+
+        vm.expectRevert(bytes("no code"));
+        proxy.upgradeTo(codeLess);
+        assertEq(proxy.implementation(), address(impl));
     }
 
     function testSafeProxyKeepsAdminSeparate() public {

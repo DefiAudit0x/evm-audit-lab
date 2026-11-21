@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "name": "Sandwich and MEV Slippage",
+  "threat_model": "An attacker trades before and after a victim swap to worsen the victim's execution within the victim-selected slippage bound.",
+  "assumptions": [
+    "The AMM is a two-token constant-product model with exact-transfer tokens in the main sandwich scenario.",
+    "The victim sets a nonzero minimum output and a deadline.",
+    "The safe example bounds victim loss by the requested tolerance; it does not guarantee that no profitable sandwich exists."
+  ],
+  "invariant": "A swap delivers at least the caller's minimum output before its deadline.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-06-sandwich-mev/src/VulnerableAmm.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-06-sandwich-mev/src/SafeAmm.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testVulnerableAmmIsSandwiched",
+      "path": "labs/lab-06-sandwich-mev/test/Sandwich.t.sol"
+    },
+    {
+      "name": "testSafeAmmBlocksSandwich",
+      "path": "labs/lab-06-sandwich-mev/test/Sandwich.t.sol"
+    },
+    {
+      "name": "testSmallSandwichCanProfitWithinSlippageBound",
+      "path": "labs/lab-06-sandwich-mev/test/Sandwich.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "unchecked-transfer",
+      "expectation": "fires for token-return handling in VulnerableAmm; this detector does not detect sandwich resistance",
+      "path": "src/VulnerableAmm.sol"
+    },
+    {
+      "detector": "manual-review",
+      "expectation": "sandwich loss and slippage behavior are verified by economic tests, not Slither",
+      "path": "src/VulnerableAmm.sol"
+    }
+  ]
+}

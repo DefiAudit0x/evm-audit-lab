@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "Fee-on-Transfer Token Accounting",
+  "threat_model": "A vault credits the requested transfer amount even though a fee-on-transfer asset delivers less, creating claims in excess of real backing.",
+  "assumptions": [
+    "The fee-token fixture reports balances honestly and charges a transfer fee.",
+    "Rebasing assets, dishonest balance reports, and tokens that debit more than requested are out of scope.",
+    "The remediated vault prices deposits using the measured balance increase and rejects unsupported fee behavior."
+  ],
+  "invariant": "Credited claims equal the value actually received by the vault under the supported token model.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-13-fee-on-transfer/src/VulnerableFotVault.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-13-fee-on-transfer/src/SafeFotVault.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testVulnerableVaultSocializesTheShortfall",
+      "path": "labs/lab-13-fee-on-transfer/test/FeeOnTransfer.t.sol"
+    },
+    {
+      "name": "testSafeVaultCreditsOnlyWhatArrived",
+      "path": "labs/lab-13-fee-on-transfer/test/FeeOnTransfer.t.sol"
+    },
+    {
+      "name": "testSafeFotVaultBlocksCallbacksAcrossDepositAndWithdraw",
+      "path": "labs/lab-13-fee-on-transfer/test/FeeOnTransfer.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "manual-review",
+      "expectation": "token transfer semantics and balance-delta accounting require fixtures and executable tests",
+      "path": "src/VulnerableFotVault.sol"
+    }
+  ]
+}

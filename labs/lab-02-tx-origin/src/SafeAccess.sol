@@ -22,7 +22,7 @@ contract SafeAccess {
     /// @notice SAFE: uses msg.sender — the immediate caller.
     function withdraw(address payable to, uint256 amount) external {
         require(msg.sender == owner, "not owner");
-        (bool ok, ) = to.call{value: amount}("");
+        (bool ok,) = to.call{value: amount}("");
         require(ok, "transfer failed");
         emit Withdrawal(to, amount);
     }

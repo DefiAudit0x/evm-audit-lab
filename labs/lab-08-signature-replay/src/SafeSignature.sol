@@ -20,7 +20,6 @@ contract SafeSignature {
     uint256 private constant HALF_N = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
 
     address public immutable authority;
-    bytes32 public immutable domainSeparator;
 
     /// @dev One slot per recipient: replaying a consumed signature makes
     ///      the recovered digest differ from the signed one.
@@ -35,7 +34,10 @@ contract SafeSignature {
 
     constructor(address _authority) payable {
         authority = _authority;
-        domainSeparator = keccak256(
+    }
+
+    function domainSeparator() public view returns (bytes32) {
+        return keccak256(
             abi.encode(DOMAIN_TYPEHASH, keccak256("SafeSignature"), keccak256("1"), block.chainid, address(this))
         );
     }
@@ -51,7 +53,7 @@ contract SafeSignature {
         bytes32 digest = keccak256(
             abi.encodePacked(
                 "\x19\x01",
-                domainSeparator,
+                domainSeparator(),
                 keccak256(abi.encode(WITHDRAWAL_TYPEHASH, recipient, amount, nonces[recipient], deadline))
             )
         );

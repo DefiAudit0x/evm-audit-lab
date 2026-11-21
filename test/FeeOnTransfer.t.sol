@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {VulnerableFotVault} from "../src/VulnerableFotVault.sol";
 import {SafeFotVault} from "../src/SafeFotVault.sol";
+import {HookToken} from "./fixtures/HookToken.sol";
 
 /// @title FeeOnTransfer.t.sol
 /// @notice Lab 13 — Exploit + regression tests for fee-on-transfer
@@ -29,8 +30,10 @@ import {SafeFotVault} from "../src/SafeFotVault.sol";
 ///   Bob's 90 real tokens became 80 frozen tokens; Alice captured 10.
 ///
 /// Remediation (see SafeFotVault):
-///   Balance-delta accounting credits the observed balance change, so claims
-///   never exceed received value regardless of token behavior.
+///   Balance-delta accounting credits the observed balance change and a shared
+///   reentrancy guard blocks nested deposits/withdrawals. The test token taxes
+///   the recipient, reports honest balances, and debits the sender by exactly
+///   the requested amount; rebases and sender-paid extra debits are unsupported.
 ///
 /// Regression tests:
 ///   Both depositors on SafeFotVault are credited 90 each and both withdraw
@@ -112,6 +115,34 @@ contract FeeOnTransferTest is Test {
         assertEq(token.balanceOf(alice), 81e18, "alice: credited 90, fee 9 on exit");
         assertEq(token.balanceOf(bob), 81e18, "bob: credited 90, fee 9 on exit");
         assertEq(token.balanceOf(address(vault)), 0, "vault solvent at zero");
+    }
+
+    function testSafeFotVaultBlocksCallbacksAcrossDepositAndWithdraw() public {
+        HookToken token = new HookToken();
+        SafeFotVault vault = new SafeFotVault(address(token));
+        token.mint(alice, DEPOSIT);
+        token.mint(address(token), 1);
+        token.approveFromSelf(address(vault), 1);
+
+        vm.prank(alice);
+        token.approve(address(vault), DEPOSIT);
+        token.configureCallback(address(vault), abi.encodeWithSignature("deposit(uint256)", 1), false, true);
+        vm.prank(alice);
+        vault.deposit(DEPOSIT);
+
+        assertTrue(token.callbackAttempted());
+        assertFalse(token.lastCallbackSucceeded(), "nested deposit must fail under the shared lock");
+        assertEq(vault.balances(alice), DEPOSIT, "only the outer deposit is credited");
+        assertEq(token.balanceOf(address(vault)), DEPOSIT);
+
+        token.configureCallback(address(vault), abi.encodeWithSignature("deposit(uint256)", 1), true, false);
+        vm.prank(alice);
+        vault.withdraw(DEPOSIT);
+
+        assertTrue(token.callbackAttempted());
+        assertFalse(token.lastCallbackSucceeded(), "nested deposit during withdrawal must fail");
+        assertEq(vault.balances(alice), 0);
+        assertEq(token.balanceOf(address(vault)), 0);
     }
 }
 

@@ -12,7 +12,7 @@ import {SafePool} from "../src/SafePool.sol";
 ///
 /// Threat model:
 ///   The pool mints shares as `assets * totalShares / totalAssets` with
-///   floor division. The first depositor can own ~100% of `totalShares`
+///   floor division. A tiny first depositor can own ~100% of `totalShares`
 ///   and inflate `totalAssets` with an external donation. The next
 ///   depositor's share math truncates to zero — but the deposit is
 ///   accepted anyway, so the depositor's funds belong to the pool forever.
@@ -31,15 +31,17 @@ import {SafePool} from "../src/SafePool.sol";
 ///      victim's 5 ETH is stolen.
 ///
 /// Remediation:
-///   The first deposit mints DEAD_SHARES to address(0). To zero out a
-///   victim's mint the attacker must donate ~DEAD_SHARES times the
-///   victim's deposit, and the donation itself is unrecoverable — the
-///   attack becomes a guaranteed net loss (see SafePool).
+///   SafePool mints a fixed DEAD_SHARES amount to address(0) on the first
+///   deposit and rejects zero-share deposits. This increases the donation
+///   required by the small-seed test below, but does not prevent a large
+///   first depositor from owning almost all live shares or guarantee every
+///   donation attack is unprofitable.
 ///
 /// Regression test:
-///   The same attack against SafePool leaves the victim with shares and
-///   lets them withdraw at least their deposit, while the attacker exits
-///   with far less than they contributed.
+///   The selected 1-wei seed / 10-ETH donation / 5-ETH victim sequence leaves
+///   the victim with positive shares and recovers their deposit within 0.1%.
+///   A separate test shows that a 1-ETH first depositor still owns over 99%
+///   of live shares despite the fixed dead-share amount.
 contract PrecisionTest is Test {
     VulnerablePool internal vulnerable;
     SafePool internal safe;
@@ -101,5 +103,14 @@ contract PrecisionTest is Test {
         vm.prank(victim);
         uint256 redeemed = safe.withdraw(victimShares);
         assertGe(redeemed, VICTIM_DEPOSIT - VICTIM_DEPOSIT / 1000, "victim must recover their deposit");
+    }
+
+    function testLargeFirstDepositorCanStillOwnNearlyAllLiveShares() public {
+        deal(address(this), 1 ether);
+        safe.deposit{value: 1 ether}();
+
+        uint256 userShares = safe.shares(address(this));
+        uint256 totalShares = safe.totalShares();
+        assertGt(userShares * 100, totalShares * 99, "dead shares do not cap first depositor at 99%");
     }
 }

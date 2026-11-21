@@ -60,8 +60,8 @@ forge test --match-contract UncheckedReturnTest --match-test testVulnerableRoute
 
 Several independent defenses; `SafeRouter.sol` implements the first two:
 
-1. **Check the return value and revert** — `bool ok = token.transfer(...); if (!ok) revert TransferFailed();`. The revert happens *before* any state change, so a failed claim stays fully retryable.
-2. **Checks-effects-interactions** — mutate `claimable`/`claimed` only after the external call is known to have succeeded, never before.
+1. **Check the return value and revert** — `bool ok = token.transfer(...); if (!ok) revert TransferFailed();`. On failure, the revert atomically rolls back the earlier accounting effects, so a failed claim stays fully retryable.
+2. **Checks-effects-interactions** — after checking the claim is nonzero, clear the claim (`delete claimable[msg.sender]`), reduce `totalClaimable`, and increment `claimed[msg.sender]` before the external call to `token.transfer`. If the transfer fails, revert as above to restore the entitlement and accounting.
 3. **Prefer vetted token libraries** — OpenZeppelin `SafeERC20.forceApprove`/`safeTransfer` normalizes the convention across reverting and non-reverting tokens.
 4. **For low-level `call`:** `(bool ok,) = to.call{value: v}(""); if (!ok) revert();` — and consider the *pull* pattern for payouts, letting recipients retry instead of a push loop that one bad leg poisons.
 

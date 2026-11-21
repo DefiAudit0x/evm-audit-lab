@@ -38,11 +38,14 @@ mechanics.
 
 ## Remediation
 
-`SafeVault4626` folds virtual share/asset constants (the OpenZeppelin
-`_decimalsOffset` pattern) into both sides of the share math, so real supply
-never operates in the degenerate 1-share regime and a donation moves the
-price by a dust fraction only. A `minted > 0` guard additionally rejects
-deposits that would round to zero shares outright.
+`SafeVault4626` adds equal virtual share and asset values (`1000e18`) to
+both sides of the conversion. This is virtual liquidity, not an OpenZeppelin
+decimal offset: it softens the large donation sequence tested below but does
+not prevent every inflation attack. A `minted > 0` guard rejects deposits
+that still round to zero. Deposits are priced from the measured balance
+increase and fee-on-transfer deposits are explicitly rejected; the model
+assumes exact-transfer, non-rebasing assets. It is an ERC-4626-style share
+accounting example, not an implementation of the full IERC4626 interface.
 
 ## Minimal reproduction
 
@@ -56,8 +59,10 @@ forge test --match-contract InflationAttackTest --match-test testVulnerableFirst
 forge test --match-contract InflationAttackTest --match-test testSafeVaultAbsorbsTheDonation -vvv
 ```
 
-The same script against `SafeVault4626` leaves the victim whole (deposit
-redeemed within floor-rounding dust) and the attacker's single share worth
-a dust fraction of the vault — the donation is absorbed, not weaponized.
+`testSafeVaultAbsorbsTheDonation` proves that, for the listed 100,000-token
+donation and victim deposit, the victim redeems within 1,000 wei of the
+deposit. `testSafeVaultCanStillRejectOneWeiAfterDonation` demonstrates the
+limit: after a 1-wei seed and 1-wei donation, another 1-wei deposit rounds to
+zero shares and reverts without taking the depositor's tokens.
 
 Companion report: [Audit-Reports/006 — ERC-4626 First-Depositor Inflation Attack](https://github.com/DefiAudit0x/Audit-Reports/blob/main/006-erc4626-inflation-attack.md).

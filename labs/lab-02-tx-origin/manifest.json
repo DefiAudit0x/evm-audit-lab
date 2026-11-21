@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "name": "tx.origin Authorization Bypass",
+  "threat_model": "An owner EOA is tricked into calling an attacker-controlled contract, which forwards a privileged withdrawal while tx.origin still names the owner.",
+  "assumptions": [
+    "The owner is an EOA that can be induced to call an untrusted contract.",
+    "The vulnerable authorization check uses tx.origin.",
+    "The demonstration measures an ETH withdrawal and does not model phishing delivery."
+  ],
+  "invariant": "Only the immediate authorized owner caller can perform a privileged withdrawal.",
+  "contracts": {
+    "vulnerable": {
+      "role": "vulnerable",
+      "path": "labs/lab-02-tx-origin/src/VulnerableAccess.sol"
+    },
+    "remediated": {
+      "role": "remediated",
+      "path": "labs/lab-02-tx-origin/src/SafeAccess.sol"
+    }
+  },
+  "tests": [
+    {
+      "name": "testExploitVulnerableTxOrigin",
+      "path": "labs/lab-02-tx-origin/test/TxOrigin.t.sol"
+    },
+    {
+      "name": "testCannotExploitSafeAccess",
+      "path": "labs/lab-02-tx-origin/test/TxOrigin.t.sol"
+    }
+  ],
+  "detector_expectations": [
+    {
+      "detector": "tx-origin",
+      "expectation": "expected on VulnerableAccess; absent from SafeAccess",
+      "path": "src/VulnerableAccess.sol"
+    },
+    {
+      "detector": "arbitrary-send-eth",
+      "expectation": "expected consequence on VulnerableAccess",
+      "path": "src/VulnerableAccess.sol"
+    }
+  ]
+}
