@@ -426,6 +426,82 @@ class DetectorMinorTests(unittest.TestCase):
             ["Oracle exposes a manipulable reserve spot price"],
         )
 
+    def test_o1_sequencer_exemption_only_covers_sequencer_feed(self):
+        wrapper = """
+        contract Wrapper {
+            function _validatedPrice() internal view returns (uint256) {
+                sequencer.latestRoundData();
+                return super._validatedPrice();
+            }
+            %s
+        }
+        """
+        sequencer_only = detect_oracle_source(ROOT, self.path, wrapper % "")
+        self.assertEqual(sequencer_only, [])
+
+        with_price_feed = """
+            function getPrice() external view returns (uint256) {
+                (int256 answer,,,,) = feed.latestRoundData();
+                return uint256(answer);
+            }
+        """
+        findings = detect_oracle_source(ROOT, self.path, wrapper % with_price_feed)
+        self.assertEqual(
+            [item.title for item in findings],
+            ["Oracle answer is missing validation checks"],
+        )
+
+    def test_o2_repeat_guard_ordering_only_applies_to_return(self):
+        template = """
+        contract Vault {
+            address owner;
+            bool initialized;
+            function initialize(address nextOwner) external {
+                STATEMENTS
+            }
+        }
+        """
+        reverting_guard = template.replace(
+            "STATEMENTS",
+            "owner = nextOwner; require(!initialized); initialized = true;",
+        )
+        self.assertEqual(proxy_upgrade.detect_source(ROOT, self.path, reverting_guard), [])
+
+        late_return_guard = template.replace(
+            "STATEMENTS",
+            "owner = nextOwner; if (initialized) return; initialized = true;",
+        )
+        findings = proxy_upgrade.detect_source(ROOT, self.path, late_return_guard)
+        self.assertEqual(
+            [item.title for item in findings],
+            ["Initializer can overwrite privileged state repeatedly"],
+        )
+
+    def test_o3_inherited_storage_write_ignores_local_shadow_only_after_declaration(self):
+        source = """
+        contract Base {
+            uint256 private scratch;
+        }
+        contract Child is Base {
+            function update(address receiver) external {
+                (bool ok,) = receiver.call("");
+                require(ok);
+                uint256 scratch = 1;
+            }
+        }
+        """
+        self.assertEqual(reentrancy.detect_source(ROOT, self.path, source), [])
+
+        storage_write = source.replace("uint256 scratch = 1;", "scratch = 1;")
+        findings = reentrancy.detect_source(ROOT, self.path, storage_write)
+        self.assertEqual([item.contract for item in findings], ["Child"])
+
+        storage_write_before_shadow = source.replace(
+            "uint256 scratch = 1;", "scratch = 1; uint256 scratch = 2;"
+        )
+        findings = reentrancy.detect_source(ROOT, self.path, storage_write_before_shadow)
+        self.assertEqual([item.contract for item in findings], ["Child"])
+
 
 if __name__ == "__main__":
     unittest.main()

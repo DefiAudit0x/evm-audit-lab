@@ -22,7 +22,10 @@ def _has_repeat_guard(header: str, body: str) -> bool:
     if INITIALIZATION_MODIFIER.search(header):
         return True
     for guard in REPEAT_GUARD.finditer(body):
-        if PRIVILEGED_ASSIGNMENT.search(body, 0, guard.start()):
+        is_return_guard = guard.group(2) is not None and bool(
+            re.search(r"\breturn\b", guard.group(0))
+        )
+        if is_return_guard and PRIVILEGED_ASSIGNMENT.search(body, 0, guard.start()):
             continue
         flag = guard.group(1) or guard.group(2)
         if re.search(rf"\b{flag}\s*=\s*true\s*;", body[guard.end():]):

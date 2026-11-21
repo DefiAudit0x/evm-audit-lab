@@ -18,7 +18,16 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
         delegates_price_validation = (
             "sequencer.latestRoundData" in code and "super._validatedPrice" in code
         )
-        if contract.name != "FakeOracle" and "latestRoundData" in code and not delegates_price_validation:
+        round_data_calls = list(re.finditer(r"latestRoundData", code))
+        sequencer_only_round_data = bool(round_data_calls) and all(
+            re.search(r"\bsequencer\s*\.\s*$", code[:match.start()])
+            for match in round_data_calls
+        )
+        if (
+            contract.name != "FakeOracle"
+            and round_data_calls
+            and not (delegates_price_validation and sequencer_only_round_data)
+        ):
             checks = {
                 "positive answer": bool(re.search(r"(?:price|answer)\s*>\s*0", code)),
                 "freshness bound": bool(re.search(r"block\.timestamp\s*-\s*\w+\s*<\s*(?:MAX_STALENESS|\d+)", code)),

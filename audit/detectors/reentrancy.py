@@ -22,6 +22,12 @@ HOOK_ENTRY = re.compile(
     r"\b(?:tokensReceived|tokensToSend|onERC777Received|onERC1155Received|"
     r"onERC1155BatchReceived|onERC721Received)\s*\("
 )
+LOCAL_DECLARATION = re.compile(
+    r"(?:^|[;{}])\s*(?:"
+    r"u?int\d*|address(?:\s+payable)?|bool|bytes\d*|string|"
+    r"[A-Za-z_]\w*(?:\s*\[\s*\])*"
+    r")\s+(?:(?:memory|storage|calldata)\s+)?([A-Za-z_]\w*)\s*(?==|;)"
+)
 
 
 def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
@@ -36,9 +42,11 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
             header = function.code_header
             if "nonReentrant" in header or "nonReentrant" in body:
                 continue
+            local_declarations = _local_declarations(body)
             interactions = list(INTERACTION.finditer(body))
             if interactions and any(
-                _storage_write_after(body, match.end(), state_names) for match in interactions
+                _storage_write_after(body, match.end(), state_names, local_declarations)
+                for match in interactions
             ):
                 variable = _shared_state_name(body, functions, state_names)
                 flavor = "cross-function reentrancy" if variable else "reentrancy"
@@ -80,14 +88,40 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
     return findings
 
 
-def _storage_write_after(body: str, offset: int, state_names: set[str]) -> bool:
+def _local_declarations(body: str) -> dict[str, list[int]]:
+    declarations: dict[str, list[int]] = {}
+    for match in LOCAL_DECLARATION.finditer(body):
+        declarations.setdefault(match.group(1), []).append(match.start(1))
+    return declarations
+
+
+def _storage_write_pattern(state_names: set[str]) -> re.Pattern[str] | None:
     if not state_names:
-        return False
-    pattern = re.compile(
+        return None
+    return re.compile(
         r"\b(" + "|".join(re.escape(name) for name in sorted(state_names, key=len, reverse=True))
         + r")\s*(?:\[[^\]]+\])?\s*(?:\+\+|--|\+=|-=|\*=|/=|=(?!=))"
     )
-    return bool(pattern.search(body, offset))
+
+
+def _is_shadowed(name: str, position: int, local_declarations: dict[str, list[int]]) -> bool:
+    return any(start <= position for start in local_declarations.get(name, []))
+
+
+def _storage_write_after(
+    body: str,
+    offset: int,
+    state_names: set[str],
+    local_declarations: dict[str, list[int]],
+) -> bool:
+    pattern = _storage_write_pattern(state_names)
+    return bool(
+        pattern
+        and any(
+            not _is_shadowed(match.group(1), match.start(1), local_declarations)
+            for match in pattern.finditer(body, offset)
+        )
+    )
 
 
 def _shared_state_name(body: str, functions, state_names: set[str]) -> str | None:
