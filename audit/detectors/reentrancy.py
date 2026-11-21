@@ -26,9 +26,11 @@ HOOK_ENTRY = re.compile(
 
 def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
     findings: list[Finding] = []
-    for contract in contract_blocks(source_path, source):
+    contracts = list(contract_blocks(source_path, source))
+    by_name = {contract.name: contract for contract in contracts}
+    for contract in contracts:
         functions = list(function_blocks(contract))
-        state_names = {name for name, _, _ in _storage_fields(contract, {})}
+        state_names = {name for name, _, _ in _storage_fields(contract, by_name)}
         for function in functions:
             body = function.code_body
             header = function.code_header

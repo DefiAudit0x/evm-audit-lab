@@ -11,6 +11,7 @@ from .solidity import contract_blocks, function_blocks, relative_path, solidity_
 
 INITIALIZATION_MODIFIER = re.compile(r"\b(?:initializer|onlyInitializing)\b(?!\s*[,\)])")
 INITIALIZED_FLAG = r"_?initialized"
+PRIVILEGED_ASSIGNMENT = re.compile(r"\b(?:owner|admin)\s*=(?!=)")
 REPEAT_GUARD = re.compile(
     rf"\b(?:require|assert)\s*\(\s*!\s*({INITIALIZED_FLAG})\s*(?:,|\))[^;]*;"
     rf"|\bif\s*\(\s*({INITIALIZED_FLAG})\s*\)\s*(?:\{{\s*)?(?:revert|return)\b[^;]*;"
@@ -21,6 +22,8 @@ def _has_repeat_guard(header: str, body: str) -> bool:
     if INITIALIZATION_MODIFIER.search(header):
         return True
     for guard in REPEAT_GUARD.finditer(body):
+        if PRIVILEGED_ASSIGNMENT.search(body, 0, guard.start()):
+            continue
         flag = guard.group(1) or guard.group(2)
         if re.search(rf"\b{flag}\s*=\s*true\s*;", body[guard.end():]):
             return True
@@ -34,7 +37,7 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
         functions = list(function_blocks(contract))
         initializers = [function for function in functions if function.name == "initialize"]
         for initializer in initializers:
-            if re.search(r"\b(?:owner|admin)\s*=", initializer.code_body) and not _has_repeat_guard(
+            if PRIVILEGED_ASSIGNMENT.search(initializer.code_body) and not _has_repeat_guard(
                 initializer.code_header, initializer.code_body
             ):
                 findings.append(

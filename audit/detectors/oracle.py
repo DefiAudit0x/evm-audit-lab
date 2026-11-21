@@ -13,11 +13,12 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
     findings = []
     for contract in contract_blocks(source_path, source):
         code = contract.code_body
-        if contract.name != "FakeOracle" and "latestRoundData" in code:
-            # The L2 uptime feed has a different schema from a price feed;
-            # the derived lender delegates price validation to its base.
-            if "sequencer.latestRoundData" in code and "super._validatedPrice" in code:
-                continue
+        # The L2 uptime feed has a different schema from a price feed;
+        # the derived lender delegates price validation to its base.
+        delegates_price_validation = (
+            "sequencer.latestRoundData" in code and "super._validatedPrice" in code
+        )
+        if contract.name != "FakeOracle" and "latestRoundData" in code and not delegates_price_validation:
             checks = {
                 "positive answer": bool(re.search(r"(?:price|answer)\s*>\s*0", code)),
                 "freshness bound": bool(re.search(r"block\.timestamp\s*-\s*\w+\s*<\s*(?:MAX_STALENESS|\d+)", code)),

@@ -351,5 +351,81 @@ class DetectorMinorTests(unittest.TestCase):
             self.assertEqual(json.loads(empty.stdout)["findings"], [])
 
 
+    def test_n1_return_guard_must_precede_sensitive_write(self):
+        for statements, expected in (
+            ("totalSupply += amount; if (msg.sender != owner) return;", True),
+            ("if (msg.sender != owner) return; totalSupply += amount;", False),
+            ("totalSupply += amount; if (msg.sender != owner) revert();", False),
+            ("totalSupply += amount; require(msg.sender == owner);", False),
+            ("totalSupply += amount; assert(msg.sender == owner);", False),
+        ):
+            with self.subTest(statements=statements):
+                source = f"""
+                contract Token {{
+                    address owner;
+                    uint256 totalSupply;
+                    function mint(uint256 amount) external {{ {statements} }}
+                }}
+                """
+                self.assertEqual(bool(detect_source(ROOT, self.path, source)), expected)
+
+    def test_n2_repeat_guard_must_precede_owner_assignment(self):
+        for statements, expected in (
+            ("owner = nextOwner; if (initialized) return;", True),
+            ("if (initialized) return; owner = nextOwner;", False),
+        ):
+            with self.subTest(statements=statements):
+                source = f"""
+                contract Vault {{
+                    address owner;
+                    bool initialized;
+                    function initialize(address nextOwner) external {{
+                        {statements}
+                        initialized = true;
+                    }}
+                }}
+                """
+                self.assertEqual(bool(proxy_upgrade.detect_source(ROOT, self.path, source)), expected)
+
+    def test_n3_reentrancy_resolves_inherited_storage(self):
+        source = """
+        contract Base {
+            mapping(address => uint256) internal balances;
+        }
+        contract Child is Base {
+            function withdraw() external {
+                payable(msg.sender).transfer(balances[msg.sender]);
+                balances[msg.sender] = 0;
+            }
+        }
+        """
+        findings = reentrancy.detect_source(ROOT, self.path, source)
+        self.assertEqual([item.contract for item in findings], ["Child"])
+        unrelated = source.replace("Child is Base", "Child")
+        self.assertEqual(reentrancy.detect_source(ROOT, self.path, unrelated), [])
+
+    def test_n4_sequencer_exemption_preserves_spot_price_check(self):
+        wrapper = """
+        contract Wrapper {
+            function _validatedPrice() internal view returns (uint256) {
+                sequencer.latestRoundData();
+                return super._validatedPrice();
+            }
+            %s
+        }
+        """
+        getter = """
+            function getPrice() external view returns (uint256) {
+                return reserve0 * 1e18 / reserve1;
+            }
+        """
+        self.assertEqual(detect_oracle_source(ROOT, self.path, wrapper % ""), [])
+        findings = detect_oracle_source(ROOT, self.path, wrapper % getter)
+        self.assertEqual(
+            [item.title for item in findings],
+            ["Oracle exposes a manipulable reserve spot price"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

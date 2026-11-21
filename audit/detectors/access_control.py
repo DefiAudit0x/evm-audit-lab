@@ -21,7 +21,7 @@ CALLER_CHECK = re.compile(
     rf"{AUTHORITY}\s*==\s*{CALLER}|{ROLE_CHECK})\s*(?:,|\))"
     rf"|\bif\s*\(\s*(?:{CALLER}\s*!=\s*{AUTHORITY}|"
     rf"{AUTHORITY}\s*!=\s*{CALLER}|!\s*{ROLE_CHECK})\s*\)"
-    r"\s*(?:\{\s*)?(?:revert|return)\b",
+    r"\s*(?:\{\s*)?(?:revert|(?P<early_return>return))\b",
 )
 ONE_SHOT_INITIALIZER = re.compile(
     r"\brequire\s*\(\s*!\s*(\w+)\b[^;]*\)\s*;"
@@ -43,9 +43,14 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                 continue
             if not re.search(r"\b(?:public|external)\b", function.code_header):
                 continue
-            sensitive = bool(re.search(r"\b(?:totalSupply|totalMinted|isMinter|claimable|implementation|owner|admin|_?paused)\b\s*(?:\[[^\]]+\])?\s*(?:=(?!=)|\+=|-=)", function.code_body))
+            sensitive = re.search(r"\b(?:totalSupply|totalMinted|isMinter|claimable|implementation|owner|admin|_?paused)\b\s*(?:\[[^\]]+\])?\s*(?:=(?!=)|\+=|-=)", function.code_body)
             initializer = function.name == "initialize" and re.search(r"\b(?:owner|admin)\s*=", function.code_body)
-            authorized = AUTH_MODIFIER.search(function.code_header) or CALLER_CHECK.search(function.code_body)
+            authorized = AUTH_MODIFIER.search(function.code_header) or any(
+                not guard.group("early_return")
+                or sensitive is None
+                or guard.start() < sensitive.start()
+                for guard in CALLER_CHECK.finditer(function.code_body)
+            )
             guarded_initializer = function.name == "initialize" and ONE_SHOT_INITIALIZER.search(function.code_body)
             if (sensitive or initializer) and not authorized and not guarded_initializer:
                 findings.append(
