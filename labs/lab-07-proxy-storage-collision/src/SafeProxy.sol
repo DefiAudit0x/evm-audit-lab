@@ -6,7 +6,13 @@ pragma solidity ^0.8.24;
 /// @dev Implementation and admin addresses live at keccak256-derived
 ///      slots no sane storage layout can reach, so implementation state
 ///      and proxy administration can never collide.
+///      Admin-only rescueETH recovers proxy-held ETH. The admin can already
+///      upgrade to an arbitrary implementation, so rescue adds no new trust
+///      assumption. The proxy's own functions take precedence over fallback
+///      dispatch to the implementation.
 contract SafeProxy {
+    event EthRescued(address indexed to, uint256 amount);
+
     /// @dev keccak256("eip1967.proxy.implementation") - 1.
     bytes32 private constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
     /// @dev keccak256("eip1967.proxy.admin") - 1.
@@ -30,6 +36,15 @@ contract SafeProxy {
         require(msg.sender == _getSlot(ADMIN_SLOT), "not admin");
         require(implementation_.code.length > 0, "no code");
         _setSlot(IMPLEMENTATION_SLOT, implementation_);
+    }
+
+    function rescueETH(address payable to, uint256 amount) external {
+        require(msg.sender == _getSlot(ADMIN_SLOT), "not admin");
+        require(to != address(0), "zero address");
+        require(amount <= address(this).balance, "insufficient balance");
+        (bool ok,) = to.call{value: amount}("");
+        require(ok, "transfer failed");
+        emit EthRescued(to, amount);
     }
 
     function _getSlot(bytes32 slot) private view returns (address a) {

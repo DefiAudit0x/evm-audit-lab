@@ -82,16 +82,8 @@ ACCEPTED = {
     ): "Accepted 2026-11-21, owner DefiAudit0x, expires 2027-05-21: Downward rounding at both steps makes the borrow limit conservative and cannot enable over-borrowing; see docs/slither-triage.md#accepted-3",
     (
         "src/SafeLending.sol",
-        "locked-ether",
-    ): "Accepted 2026-11-21, owner DefiAudit0x, expires 2027-05-21: Collateral ETH has no recovery path in this educational debt-accounting model, which is not a custody product; see docs/slither-triage.md#accepted-4",
-    (
-        "src/SafeLending.sol",
         "unused-return",
     ): "Accepted 2026-11-21, owner DefiAudit0x, expires 2027-05-21: Sequencer status and grace time are checked while primary-feed round completeness is validated; see docs/slither-triage.md#accepted-5",
-    (
-        "src/SafeProxy.sol",
-        "locked-ether",
-    ): "Accepted 2026-11-21, owner DefiAudit0x, expires 2027-05-21: Proxy-held ETH has no recovery path in this storage-collision lab's minimal implementations; see docs/slither-triage.md#accepted-6",
     (
         "src/SafeSwap.sol",
         "incorrect-equality",

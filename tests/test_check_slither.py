@@ -69,8 +69,8 @@ class SlitherGateTests(unittest.TestCase):
             end = headings[index + 1].start() if index + 1 < len(headings) else len(section)
             entries[(heading.group(1), heading.group(2))] = section[heading.end():end]
 
-        self.assertEqual(len(GATE["ACCEPTED"]), 10)
-        self.assertEqual(len(entries), 10)
+        self.assertEqual(len(GATE["ACCEPTED"]), 8)
+        self.assertEqual(len(entries), 8)
         for finding in GATE["ACCEPTED"]:
             with self.subTest(finding=finding):
                 self.assertIn(finding, entries)
