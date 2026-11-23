@@ -6,12 +6,20 @@ from pathlib import Path
 import re
 
 from .finding import Finding
-from .solidity import contract_blocks, function_blocks, relative_path, solidity_files
+from .solidity import (
+    condition_enforces,
+    contract_blocks,
+    function_blocks,
+    relative_path,
+    require_conditions,
+    solidity_files,
+)
 
 
 DIVIDE_THEN_MULTIPLY = re.compile(
     r"\([^()]+\s*/\s*[^()]+\)\s*\*\s*[A-Za-z0-9_(]"
 )
+POSITIVE_SHARE = re.compile(r"\b(?:minted|shares)\s*>\s*0")
 
 
 def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
@@ -22,11 +30,15 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
         share_math = bool(re.search(r"\b(?:totalShares|shares)\b", code))
         deposit_code = "\n".join(f.code_body for f in funcs if f.name in {"deposit", "convertToShares"})
         if share_math and deposit_code and "/" in deposit_code:
-            # A `&&` continuation still enforces the guard (both sides must
-            # hold); a `||` continuation does not, so it stays a finding.
-            zero_guard = bool(re.search(
-                r"\b(?:require|assert)\s*\(\s*(?:minted|shares)\s*>\s*0\s*[,)&]"
-                r"|\bif\s*\(\s*(?:minted|shares)\s*==\s*0\s*\)\s*\{?\s*revert\b",
+            # A guard enforces a positive mint only if no top-level `||`
+            # can bypass it: `minted > 0 && ... || assets > 0` passes with
+            # minted == 0, so it is not a guard. A parenthesized guard
+            # `(minted > 0)` still counts.
+            zero_guard = any(
+                condition_enforces(condition, POSITIVE_SHARE)
+                for condition in require_conditions(deposit_code)
+            ) or bool(re.search(
+                r"\bif\s*\(\s*(?:minted|shares)\s*==\s*0\s*\)\s*\{?\s*revert\b",
                 deposit_code,
             ))
             seeded = bool(re.search(r"DEAD_SHARES|_VIRTUAL_SHARES", code))

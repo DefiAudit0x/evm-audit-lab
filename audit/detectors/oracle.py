@@ -6,7 +6,14 @@ from pathlib import Path
 import re
 
 from .finding import Finding
-from .solidity import contract_blocks, function_blocks, relative_path, solidity_files
+from .solidity import (
+    constructor_blocks,
+    contract_blocks,
+    function_blocks,
+    modifier_blocks,
+    relative_path,
+    solidity_files,
+)
 
 
 def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
@@ -19,7 +26,15 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
             "sequencer.latestRoundData" in code and "super._validatedPrice" in code
         )
         functions = list(function_blocks(contract))
-        for function in functions:
+        # Oracle reads in modifiers and constructors are scannable units
+        # too, with the same per-body checks as functions; validation stays
+        # scoped to each body.
+        units = (
+            functions
+            + list(modifier_blocks(contract))
+            + list(constructor_blocks(contract))
+        )
+        for function in units:
             code = function.code_body
             round_data_calls = list(re.finditer(r"\blatestRoundData\s*\(", code))
             if contract.name == "FakeOracle" or not round_data_calls:

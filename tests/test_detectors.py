@@ -14,7 +14,7 @@ from audit.detectors.storage_collision import detect_source as detect_storage_co
 
 from audit.detectors import precision, proxy_upgrade, reentrancy
 from audit.detectors.solidity import contract_blocks
-from audit.detectors.storage_collision import EIP1967_ADMIN, EIP1967_IMPLEMENTATION, _dedicated_slot_status
+from audit.detectors.storage_collision import EIP1967_ADMIN, EIP1967_IMPLEMENTATION, _dedicated_slot_status, _resolved_storage_layout
 
 
 class DetectorTests(unittest.TestCase):
@@ -107,6 +107,27 @@ class DetectorTests(unittest.TestCase):
         }
         """
         self.assertEqual(reentrancy.detect_source(ROOT, Path("src/Synthetic.sol"), source), [])
+
+    def test_reentrancy_storage_parameter_write_still_flags(self):
+        # A storage reference is state, not a copy: writes through it stay
+        # eligible. A memory parameter of the same name is a copy, so writes
+        # through it are still correctly discarded.
+        for location, expected in (("storage", 1), ("memory", 0)):
+            with self.subTest(location=location):
+                source = f"""
+                contract Vault {{
+                    uint256[] balances;
+                    function withdraw(uint256[] {location} balances) external {{
+                        (bool ok,) = msg.sender.call("");
+                        require(ok);
+                        balances[0] = 0;
+                    }}
+                }}
+                """
+                self.assertEqual(
+                    len(reentrancy.detect_source(ROOT, Path("src/Synthetic.sol"), source)),
+                    expected,
+                )
 
     def test_storage_collision_flags_vulnerable_proxy(self):
         self.assertIn(("storage_collision", "src/VulnerableProxy.sol", "VulnerableProxy"), self.findings)
@@ -243,6 +264,23 @@ class DetectorTests(unittest.TestCase):
                 self.assertEqual(findings[0].contract, "SyntheticSwap")
                 self.assertEqual(findings[0].title, "Oracle exposes a manipulable reserve spot price")
 
+    def test_oracle_flags_feed_read_in_modifier_and_constructor(self):
+        for unit in (
+            "modifier checked() { (, int256 answer, , , ) = AggregatorV3Interface(feed).latestRoundData(); _; }",
+            "constructor() { (, int256 answer, , , ) = AggregatorV3Interface(feed).latestRoundData(); }",
+        ):
+            with self.subTest(unit=unit[:20]):
+                source = f"""
+                contract SyntheticLender {{
+                    address public feed;
+                    {unit}
+                    function borrow() external {{}}
+                }}
+                """
+                findings = detect_oracle_source(ROOT, Path("src/SyntheticLender.sol"), source)
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(findings[0].title, "Oracle answer is missing validation checks")
+
     def test_precision_flags_vulnerable_pool(self):
         self.assertIn(("precision", "src/VulnerablePool.sol", "VulnerablePool"), self.findings)
 
@@ -256,6 +294,13 @@ class DetectorTests(unittest.TestCase):
             # `||` does not enforce: the guard passes when the other side
             # holds even with a zero mint, so it stays a finding.
             'require(minted > 0 || totalShares == 0, "zero shares");',
+            # A trailing `||` after an enforcing `&&` chain still lets the
+            # call continue with a zero mint.
+            'require(minted > 0 && totalAssets > 0 || assets > 0, "zero shares");',
+            # A `||` wrapped in parens is the same bypass one level deeper:
+            # the guard passes when the other side holds with a zero mint.
+            'require((minted > 0 || shares > 0), "zero shares");',
+            'require((shares > 0 || minted > 0), "zero shares");',
         ):
             with self.subTest(guard=guard):
                 findings = self._positive_share_guard_findings(guard)
@@ -271,6 +316,10 @@ class DetectorTests(unittest.TestCase):
             "if (minted == 0) { revert ZeroShares(); }",
             'require(minted > 0 && totalAssets > 0, "zero shares");',
             "assert(minted > 0 && totalShares > 0);",
+            'require((minted > 0), "zero shares");',
+            "assert((shares > 0));",
+            # Doubly parenthesised comparisons still enforce.
+            'require(((minted > 0)), "zero shares");',
         ):
             with self.subTest(guard=guard):
                 self.assertEqual(self._positive_share_guard_findings(guard), [])
@@ -399,6 +448,87 @@ class DetectorTests(unittest.TestCase):
         self.assertIn("implementation code check", findings[0].message)
         self.assertIn("UUPS proxiableUUID compatibility", findings[0].message)
 
+    def test_proxy_upgrade_flags_bypassable_and_conditional_checks(self):
+        # A `|| bypass` in any check lets the call continue with the check
+        # unmet, so all three checks are missing.
+        for guard in (
+            """
+            require(candidate.code.length > 0 || bypass);
+            require(IERC1822(candidate).proxiableUUID() == IMPLEMENTATION_SLOT || bypass);
+            require(address(this) != SELF || bypass);
+            """,
+            # Checks wrapped in `if (check) { ... }` only run when the
+            # branch is taken, so they do not count either.
+            """
+            if (check) {
+                require(candidate.code.length > 0);
+                require(IERC1822(candidate).proxiableUUID() == IMPLEMENTATION_SLOT);
+                require(address(this) != SELF);
+            }
+            """,
+        ):
+            with self.subTest(guard=guard[:40]):
+                source = f"""
+                contract Vault {{
+                    function upgradeToAndCall(address candidate, bytes calldata data) external {{
+                        {guard}
+                    }}
+                }}
+                """
+                findings = proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source)
+                self.assertEqual(len(findings), 1)
+                for check in ("implementation code check", "UUPS proxiableUUID compatibility", "proxy-only execution context"):
+                    self.assertIn(check, findings[0].message)
+
+    def test_proxy_upgrade_flags_paren_wrapped_or_in_context_check(self):
+        # A `|| bypass` wrapped in parens is the same bypass one level
+        # deeper: the context check passes with bypass set, so it is missing
+        # while the other two checks are enforced.
+        source = """
+        contract Vault {
+            function upgradeToAndCall(address candidate, bytes calldata data) external {
+                require(candidate.code.length > 0);
+                require(IERC1822(candidate).proxiableUUID() == IMPLEMENTATION_SLOT);
+                require((address(this) != SELF || bypass));
+            }
+        }
+        """
+        findings = proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("proxy-only execution context", findings[0].message)
+        self.assertNotIn("implementation code check", findings[0].message)
+        self.assertNotIn("UUPS proxiableUUID compatibility", findings[0].message)
+
+    def test_proxy_upgrade_accepts_separate_guards_for_uuid_probe(self):
+        source = """
+        contract Vault {
+            function upgradeToAndCall(address candidate, bytes calldata data) external {
+                require(candidate.code.length > 0);
+                (bool compatible, bytes memory uuid) = candidate.staticcall(abi.encodeCall(this.proxiableUUID, ()));
+                require(compatible);
+                require(abi.decode(uuid, (bytes32)) == IMPLEMENTATION_SLOT);
+                require(address(this) != SELF);
+            }
+        }
+        """
+        self.assertEqual(proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source), [])
+
+    def test_proxy_upgrade_accepts_not_false_success_guard_for_uuid_probe(self):
+        # `compatible != false` enforces the probe's success flag just like
+        # `compatible` or `compatible == true` (`!compatible` stays rejected).
+        source = """
+        contract Vault {
+            function upgradeToAndCall(address candidate, bytes calldata data) external {
+                require(candidate.code.length > 0);
+                (bool compatible, bytes memory uuid) = candidate.staticcall(abi.encodeCall(this.proxiableUUID, ()));
+                require(compatible != false);
+                require(abi.decode(uuid, (bytes32)) == IMPLEMENTATION_SLOT);
+                require(address(this) != SELF);
+            }
+        }
+        """
+        self.assertEqual(proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source), [])
+
 
 class DetectorMinorTests(unittest.TestCase):
     path = Path("src/Synthetic.sol")
@@ -457,6 +587,42 @@ class DetectorMinorTests(unittest.TestCase):
         self.assertEqual([item.title for item in findings], ["Upgrade changes an existing storage prefix"])
         unchanged = source.replace("[1]", "[ 2 ]")
         self.assertEqual(detect_storage_collision_source(ROOT, self.path, unchanged), [])
+
+    def test_storage_collision_array_resize_shifts_later_field(self):
+        # V1 `[2]+value` vs V2 `[1]+value+extra` flatten identically without
+        # boundaries, though `value` moves slot 2 -> 1.
+        source = """
+        contract LayoutV1 {
+            uint256[2] reserved;
+            uint256 value;
+        }
+        contract LayoutV2 {
+            uint256[1] reserved;
+            uint256 value;
+            uint256 extra;
+        }
+        """
+        findings = detect_storage_collision_source(ROOT, self.path, source)
+        self.assertEqual([item.title for item in findings], ["Upgrade changes an existing storage prefix"])
+
+    def test_storage_collision_huge_fixed_array_uses_descriptor(self):
+        source = """
+        contract LayoutV1 {
+            uint256[100000] reserved;
+            uint256 value;
+        }
+        contract LayoutV2 {
+            uint256[100000] reserved;
+            uint256 value;
+        }
+        """
+        contracts = list(contract_blocks(self.path, source))
+        by_name = {contract.name: contract for contract in contracts}
+        layout = _resolved_storage_layout(contracts[0], by_name)
+        self.assertEqual(len(layout), 2)
+        self.assertEqual(layout[0], (("array", "uint256", "100000"), 0, 0, (0,)))
+        self.assertEqual(layout[1], ("uint256", 100000, 0, (1,)))
+        self.assertEqual(detect_storage_collision_source(ROOT, self.path, source), [])
 
     def test_d05_standard_slot_does_not_isolate_ordinary_storage(self):
         source = f"""
@@ -523,6 +689,66 @@ class DetectorMinorTests(unittest.TestCase):
                 ):
                     findings = detector(ROOT, self.path, source)
                     self.assertEqual(len(findings), int(expected), findings)
+
+    def test_initializer_flag_shadowed_only_after_guard_still_guards(self):
+        # CodeRabbit example: a `bool` declared in a block AFTER the guard
+        # does not shadow the state flag at the guard/assignment positions.
+        source = """
+        contract Vault {
+            address owner;
+            bool initialized;
+            function initialize(address nextOwner) external {
+                require(!initialized);
+                initialized = true;
+                owner = nextOwner;
+                { bool initialized = false; }
+            }
+        }
+        """
+        for detector in (detect_source, proxy_upgrade.detect_source):
+            with self.subTest(detector=detector.__module__):
+                self.assertEqual(detector(ROOT, self.path, source), [])
+
+    def test_initializer_flag_tuple_bool_before_guard_shadows(self):
+        # A `bool` declared as a tuple element before the guard is scoped
+        # to the enclosing block, so it shadows the state flag at the guard
+        # and the initializer is unprotected in both detectors.
+        source = """
+        contract Vault {
+            address owner;
+            bool initialized;
+            function initialize(address nextOwner) external {
+                (bool initialized, uint256 x) = (false, 1);
+                require(!initialized);
+                initialized = true;
+                owner = nextOwner;
+            }
+        }
+        """
+        for detector in (detect_source, proxy_upgrade.detect_source):
+            with self.subTest(detector=detector.__module__):
+                findings = detector(ROOT, self.path, source)
+                self.assertEqual(len(findings), 1, findings)
+
+    def test_initializer_flag_for_loop_bool_before_guard_does_not_shadow(self):
+        # A `bool` declared as a for-loop initializer is scoped to the loop,
+        # so the state flag IS guarded after it — no finding in either
+        # detector. This pins the old code's false positive as fixed.
+        source = """
+        contract Vault {
+            address owner;
+            bool initialized;
+            function initialize(address nextOwner) external {
+                for (bool initialized = false; initialized; initialized = false) {}
+                require(!initialized);
+                initialized = true;
+                owner = nextOwner;
+            }
+        }
+        """
+        for detector in (detect_source, proxy_upgrade.detect_source):
+            with self.subTest(detector=detector.__module__):
+                self.assertEqual(detector(ROOT, self.path, source), [])
 
     def test_d07_setting_flag_does_not_guard_initializer(self):
         source = """

@@ -48,6 +48,11 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
             parameters = re.search(r"\(([^)]*)\)", header)
             if parameters:
                 for parameter in parameters.group(1).split(","):
+                    # A storage reference is state, not an independent copy:
+                    # writes through it still reach storage, so it must not
+                    # shadow the state name for the whole function body.
+                    if re.search(r"\bstorage\b", parameter):
+                        continue
                     names = re.findall(r"\b[A-Za-z_]\w*\b", parameter)
                     if len(names) > 1:
                         local_declarations.setdefault(names[-1], []).append((0, len(body)))

@@ -4,7 +4,7 @@
 
 ## Threat model
 
-- **Asset at risk:** the vault's real backing — the shortfall is borne pro-rata by honest depositors.
+- **Asset at risk:** the vault's real backing — the shortfall falls on later withdrawers; realized losses depend on withdrawal order (Alice receives 90, Bob cannot recover his full claim).
 - **Privileged actor:** none — the flaw activates the moment a fee-on-transfer token (or a fee-wrapping router) is accepted.
 - **Untrusted actor:** any depositor through such a token, including one who deployed the fee token for the purpose.
 - **Preconditions:** deposits of a token that delivers less than instructed (fee-on-transfer, some rebasing tokens).
@@ -35,8 +35,10 @@ Bob's 100 claim exceeds the 80 tokens left in backing after Alice's
 withdrawal, so Bob cannot recover the full amount represented by his claim.
 ```
 
-Cycling deposit/withdraw through the fee token loses value on each transfer.
-It does not produce a profitable extraction.
+Cycling deposit/withdraw through the regression token loses value on each
+transfer — its fees are burned, so it does not produce a profitable
+extraction. An attacker-deployed fee token that returns fees to the
+attacker can make cycling profitable.
 
 ## Remediation
 

@@ -254,21 +254,40 @@ def _resolved_storage_layout(contract, by_name):
             return kind + "256"
         return kind
 
-    def flatten(types, start=0):
+    def flatten(types, start=0, prefix=()):
+        # Each leaf entry carries its aggregate boundary path: a tuple of
+        # indices from the top-level field down to the leaf (array elements
+        # get their element index). Two layouts that flatten to the same
+        # (kind, slot, offset) sequence still differ when a field moved
+        # because an array resized — the path records where it came from.
         layout = []
         slot, offset = start, 0
-        for kind in types:
+        for index, kind in enumerate(types):
+            path = prefix + (index,)
             if isinstance(kind, tuple):
                 slot += bool(offset)
                 offset = 0
                 if kind and kind[0] == "array":
                     _, element, length = kind
                     if length:
-                        members, end = flatten([element] * int(length), slot)
+                        count = int(length)
+                        if count <= 1024:
+                            members, end = flatten([element] * count, slot, path)
+                        else:
+                            # Do not materialize huge fixed arrays: one
+                            # descriptor entry, advancing the cursor by the
+                            # slot span of a single element times the length.
+                            # That span is a conservative over-estimate:
+                            # elements of small types may pack across element
+                            # boundaries (e.g. uint128[4] occupies 2 slots).
+                            # Comparisons are relative between two layouts,
+                            # so the over-estimate cannot mask a change.
+                            _, span = flatten([element], 0, path)
+                            members, end = [(kind, slot, 0, path)], slot + span * count
                     else:
-                        members, end = [(kind, slot, 0)], slot + 1
+                        members, end = [(kind, slot, 0, path)], slot + 1
                 else:
-                    members, end = flatten(kind, slot)
+                    members, end = flatten(kind, slot, path)
                 layout.extend(members)
                 slot = end
                 continue
@@ -281,7 +300,7 @@ def _resolved_storage_layout(contract, by_name):
             if offset + size > 32 or kind in ("bytes", "string") or kind.startswith("mapping"):
                 slot += bool(offset)
                 offset = 0
-            layout.append((kind, slot, offset))
+            layout.append((kind, slot, offset, path))
             offset += size
             if offset == 32:
                 slot += 1
