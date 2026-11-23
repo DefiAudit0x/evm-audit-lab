@@ -151,7 +151,14 @@ def _member_blocks(
         # list, so the match is skipped.
         between = body[match.end() : open_paren] if open_paren != -1 else body[match.end() :]
         if "{" in between:
-            delimiter = match.end() + between.index("{")
+            brace_index = between.index("{")
+            semicolon_index = between.find(";")
+            if semicolon_index != -1 and semicolon_index < brace_index:
+                # A `;` before the `{` means this declaration is bodyless
+                # (`modifier optional virtual;`) — the `{` belongs to a
+                # later member, not to this one.
+                continue
+            delimiter = match.end() + brace_index
         elif open_paren != -1 and not between.strip():
             depth = 0
             close_paren = None
@@ -398,7 +405,28 @@ def _conjunct_enforces(conjunct: str, wanted: re.Pattern[str]) -> bool:
         if (operator == "==" and rhs == "true") or (operator == "!=" and rhs == "false"):
             return _conjunct_enforces(lhs, wanted)
         return False
+    parts = split_top_level(stripped, "&&")
+    if len(parts) > 1:
+        # A parenthesized conjunction strips to several comparisons; any
+        # one of them enforcing `wanted` is enough (the wrapper check
+        # above already rejected a `== false` / `!= true` wrapper).
+        return any(_conjunct_enforces(part, wanted) for part in parts)
     return wanted.fullmatch(stripped) is not None
+
+
+def _has_top_level_ternary(text: str) -> bool:
+    """True if `text` contains a `?` at paren depth 0 — a ternary selector
+    at the top level means the condition can hold without enforcing any
+    single conjunct. A `?` nested in parens is fine."""
+    depth = 0
+    for char in text:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "?" and depth == 0:
+            return True
+    return False
 
 
 def condition_enforces(condition: str, wanted: re.Pattern[str]) -> bool:
@@ -409,8 +437,14 @@ def condition_enforces(condition: str, wanted: re.Pattern[str]) -> bool:
     top-level `&&` conjunct must match `wanted` as a COMPLETE comparison:
     a substring match is not enough — `(minted > 0) == false` contains the
     comparison but requires it to be false, so it enforces nothing. See
-    `_conjunct_enforces` for the wrapper rule.
+    `_conjunct_enforces` for the wrapper rule. A top-level ternary
+    selector (`cond ? a : b`) is rejected outright: the condition can hold
+    while `wanted` is false, so it enforces nothing (deliberately
+    conservative — `minted > 0 ? true : false` is rejected too).
     """
+    stripped = strip_outer_parens(condition)
+    if _has_top_level_ternary(stripped):
+        return False
     parts = split_top_level(condition, "||")
     if len(parts) != 1:
         return False

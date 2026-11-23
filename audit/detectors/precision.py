@@ -24,7 +24,9 @@ POSITIVE_SHARE = re.compile(r"\b(?:minted|shares)\s*>\s*0")
 
 
 def _top_level_if_else_branches(code: str):
-    """Yield (then_body, else_body_or_None) for top-level `if` statements.
+    """Yield (then_body, else_body_or_None, then_start, else_start_or_None)
+    for top-level `if` statements, with each arm body's absolute start
+    offset in `code`.
 
     Only braced branches are analyzed; an `else if` chain yields
     else_body None (not analyzed — conservative).
@@ -57,10 +59,12 @@ def _top_level_if_else_branches(code: str):
             if then_end is None:
                 continue
             then_body = code[cursor + 1 : then_end]
+            then_start = cursor + 1
             cursor = then_end + 1
             while cursor < len(code) and code[cursor] in " \t\n":
                 cursor += 1
             else_body = None
+            else_start = None
             if re.match(r"else\b", code[cursor:]):
                 after_else = cursor + 4
                 while after_else < len(code) and code[after_else] in " \t\n":
@@ -69,7 +73,8 @@ def _top_level_if_else_branches(code: str):
                     else_end = matching_brace(code, after_else)
                     if else_end is not None:
                         else_body = code[after_else + 1 : else_end]
-            yield then_body, else_body
+                        else_start = after_else + 1
+            yield then_body, else_body, then_start, else_start
         char = token.group()
         if char == "{":
             braces += 1
@@ -82,20 +87,86 @@ def _top_level_if_else_branches(code: str):
         statement_start = braces == parentheses == 0 and char in (";", "}")
 
 
-def _branch_covers_mint(branch: str, top_conditions: list[str]) -> bool:
+def _top_level_statements(code: str):
+    """Yield (statement, start_offset) for top-level statements of `code`:
+    text between `;`/`}` delimiters at brace/paren depth 0. A statement
+    nested in `if`/`for` braces is yielded whole (e.g. an entire
+    `if (...) { ... }`), never split — only a statement that IS a plain
+    `minted = X;` / `shares = X;` can prove a branch mints."""
+    braces = parentheses = 0
+    start = 0
+    for index, char in enumerate(code):
+        if char == "{":
+            braces += 1
+        elif char == "}":
+            braces -= 1
+            if braces == parentheses == 0:
+                yield code[start : index + 1], start
+                start = index + 1
+        elif char == "(":
+            parentheses += 1
+        elif char == ")":
+            parentheses -= 1
+        elif char == ";" and braces == parentheses == 0:
+            yield code[start : index + 1], start
+            start = index + 1
+    tail = code[start:]
+    if tail.strip():
+        yield tail, start
+
+
+def _written_between(code: str, start: int, end: int, name: str) -> bool:
+    """True if `name` is written in code[start:end]: a plain or compound
+    assignment, `++`/`--`, a tuple-assignment LHS element, or an indexed
+    write `name[...] = ...`. A `==` comparison is not a write, and a name
+    in a call or a return is not either."""
+    window = code[start:end]
+    escaped = re.escape(name)
+    if re.search(rf"\b{escaped}\s*(?:=(?!=)|[+\-*/%&|^]=|<<=|>>=|\+\+|--)", window):
+        return True
+    if re.search(rf"\([^()]*\b{escaped}\b[^()]*\)\s*=(?!=)", window):
+        return True
+    return re.search(
+        rf"\b{escaped}\s*(?:\[[^\]]*\])+\s*(?:=(?!=)|[+\-*/%&|^]=|<<=|>>=)",
+        window,
+    ) is not None
+
+
+def _branch_covers_mint(
+    branch: str,
+    guard_pairs: list[tuple[str, int]],
+    branch_start: int,
+    deposit_code: str,
+) -> bool:
     """True if a branch guarantees a positive mint on its own path: either
     it holds an enforcing require, or it assigns `minted`/`shares` from a
     value with a top-level positive require (e.g. `minted = msg.value`
-    with `require(msg.value > 0)`)."""
+    with `require(msg.value > 0)`).
+
+    The assignment must be a plain top-level statement of the arm: an
+    assignment nested in an inner `if` runs only when that branch is
+    taken. A guarded copy counts only if the guard stating `X > 0`
+    precedes the copy and `X` is not rewritten between the guard and the
+    copy."""
     if any(
         condition_enforces(condition, POSITIVE_SHARE)
         for condition, _ in top_level_guard_conditions(branch)
     ):
         return True
-    for assign in re.finditer(r"\b(?:minted|shares)\s*=\s*([\w.]+)\s*;", branch):
-        value = assign.group(1)
+    for statement, stmt_start in _top_level_statements(branch):
+        match = re.fullmatch(r"\s*(?:minted|shares)\s*=\s*([\w.]+)\s*;", statement)
+        if match is None:
+            continue
+        value = match.group(1)
+        assign_offset = branch_start + stmt_start + (len(statement) - len(statement.lstrip()))
         pattern = re.compile(rf"{re.escape(value)}\s*(?:>\s*0|>=\s*1)")
-        if any(condition_enforces(condition, pattern) for condition in top_conditions):
+        for condition, guard_offset in guard_pairs:
+            if guard_offset >= assign_offset:
+                continue
+            if not condition_enforces(condition, pattern):
+                continue
+            if _written_between(deposit_code, guard_offset, assign_offset, value):
+                continue
             return True
     return False
 
@@ -113,9 +184,9 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
             # A guard inside `if (...) { ... }` is skipped when the branch
             # is not taken, so it enforces nothing. A parenthesized guard
             # `(minted > 0)` at the top level still counts.
+            top_guard_pairs = top_level_guard_conditions(deposit_code)
             top_conditions = [
-                condition
-                for condition, _ in top_level_guard_conditions(deposit_code)
+                condition for condition, _ in top_guard_pairs
             ]
             zero_guard = any(
                 condition_enforces(condition, POSITIVE_SHARE)
@@ -128,9 +199,9 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                 # a top-level positive require). A bare `if` never counts.
                 zero_guard = any(
                     else_body is not None
-                    and _branch_covers_mint(then_body, top_conditions)
-                    and _branch_covers_mint(else_body, top_conditions)
-                    for then_body, else_body in _top_level_if_else_branches(deposit_code)
+                    and _branch_covers_mint(then_body, top_guard_pairs, then_start, deposit_code)
+                    and _branch_covers_mint(else_body, top_guard_pairs, else_start, deposit_code)
+                    for then_body, else_body, then_start, else_start in _top_level_if_else_branches(deposit_code)
                 )
             zero_guard = zero_guard or bool(re.search(
                 r"\bif\s*\(\s*(?:minted|shares)\s*==\s*0\s*\)\s*\{?\s*revert\b",

@@ -26,6 +26,25 @@ REPEAT_GUARD = re.compile(
     rf"|\bif\s*\(\s*({INITIALIZED_FLAG})\s*\)\s*(?:\{{\s*)?(?:revert|return)\b[^;]*;"
 )
 
+# The expected UUPS implementation slot: the EIP-1967 standard value and
+# the lab value this repo's own contracts use (SafeUupsVault defines
+# IMPLEMENTATION_SLOT with the lab hex). A guard comparing the probe
+# output to anything else — e.g. bytes32(0) — checks the wrong value.
+_EXPECTED_SLOT_HEXES = (
+    "0x360894a13ba1a3210667c828492db98dca3e9e2076cc4c2f0e3b8b1e9e2c0c",
+    "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+)
+# RHS of a slot comparison: the IMPLEMENTATION_SLOT identifier (optionally
+# qualified), or one of the expected slot hexes (case-insensitive),
+# optionally wrapped in bytes32(...) / bytes32(uint256(...)) casts.
+_SLOT_RHS = (
+    r"(?:bytes32\s*\(\s*(?:uint256\s*\(\s*)?)?"
+    r"(?:(?:[A-Za-z_]\w*\.)*IMPLEMENTATION_SLOT"
+    + "".join(rf"|(?i:{value})" for value in _EXPECTED_SLOT_HEXES)
+    + r")"
+    r"(?:\s*\))?(?:\s*\))?"
+)
+
 
 def _has_repeat_guard(header: str, body: str, state_flags: set[str]) -> bool:
     if INITIALIZATION_MODIFIER.search(header):
@@ -43,15 +62,21 @@ def _has_repeat_guard(header: str, body: str, state_flags: set[str]) -> bool:
 
 
 def _assigned_between(body: str, start: int, end: int, name: str) -> bool:
-    """True if `name = ...` occurs in body[start:end], plain or as an
-    element of a tuple-assignment LHS, e.g. `(compatible, uuid) = (...)`.
+    """True if `name = ...` occurs in body[start:end]: plain, as an element
+    of a tuple-assignment LHS (e.g. `(compatible, uuid) = (...)`), or as
+    an indexed write (`uuid[0] = ...`, including compound operators).
     A `==` comparison is not an assignment, and a tuple in a call or a
     return has no `=` after its `)`, so neither is flagged."""
     window = body[start:end]
     if re.search(rf"\b{re.escape(name)}\s*=(?!=)", window):
         return True
-    return re.search(
+    if re.search(
         rf"\([^()]*\b{re.escape(name)}\b[^()]*\)\s*=(?!=)", window
+    ) is not None:
+        return True
+    return re.search(
+        rf"\b{re.escape(name)}\s*(?:\[[^\]]*\])+\s*(?:=(?!=)|[+\-*/%&|^]=|<<=|>>=)",
+        window,
     ) is not None
 
 
@@ -86,7 +111,7 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
             guard_pairs = top_level_guard_conditions(body)
             guards = [condition for condition, _ in guard_pairs]
             uuid_pattern = re.compile(
-                rf"\b\w+\s*\(\s*{candidate_name}\s*\)\s*\.\s*proxiableUUID\s*\(\s*\)\s*==\s*.+"
+                rf"\b\w+\s*\(\s*{candidate_name}\s*\)\s*\.\s*proxiableUUID\s*\(\s*\)\s*==\s*{_SLOT_RHS}"
             )
             compatible = any(
                 condition_enforces(guard, uuid_pattern) for guard in guards
@@ -103,7 +128,7 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                     rf"^(?:{success}\s*==\s*true|{success}\s*!=\s*false|{success})$"
                 )
                 decode_pattern = re.compile(
-                    rf"\babi\s*\.\s*decode\s*\(\s*{uuid}\s*,\s*\(\s*bytes32\s*\)\s*\)\s*==\s*.+"
+                    rf"\babi\s*\.\s*decode\s*\(\s*{uuid}\s*,\s*\(\s*bytes32\s*\)\s*\)\s*==\s*{_SLOT_RHS}"
                 )
                 # Compatible either as one combined guard (`success &&` +
                 # decode comparison) or as two separate top-level guards for
@@ -113,13 +138,18 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                 # invalidates that guard: it would validate the replacement
                 # value, not the probe result. An assignment AFTER the
                 # guards does not invalidate them.
+                # A guard counts only if it runs AFTER the probe: a guard
+                # before the probe checked the state variables of the same
+                # names, not the probe outputs.
                 success_ok = any(
-                    condition_enforces(condition, success_pattern)
+                    offset > probe.end()
+                    and condition_enforces(condition, success_pattern)
                     and not _assigned_between(body, probe.end(), offset, success_name)
                     for condition, offset in guard_pairs
                 )
                 decode_ok = any(
-                    condition_enforces(condition, decode_pattern)
+                    offset > probe.end()
+                    and condition_enforces(condition, decode_pattern)
                     and not _assigned_between(body, probe.end(), offset, uuid_name)
                     for condition, offset in guard_pairs
                 )
