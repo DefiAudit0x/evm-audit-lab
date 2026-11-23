@@ -145,43 +145,93 @@ def _written_between(code: str, start: int, end: int, name: str, *, include_inde
     ) is not None
 
 
+# A top-level statement that writes `minted`/`shares` outright: plain or
+# compound assignment, `++`/`--` (prefix or postfix), `delete`, or a
+# tuple-assignment LHS element. Indexed writes `name[...] = ...` are not
+# included: they change a balance entry, not the scalar mint value.
+_TOP_LEVEL_WRITE = re.compile(
+    r"\s*(?:(?:minted|shares)\s*(?:=(?!=)|[+\-*/%&|^]=|<<=|>>=|\+\+|--)"
+    r"|delete\s+(?:minted|shares)\b|(?:\+\+|--)\s*(?:minted|shares)\b"
+    r"|\([^()]*\b(?:minted|shares)\b[^()]*\)\s*=(?!=))"
+)
+
+
 def _branch_covers_mint(
     branch: str,
     guard_pairs: list[tuple[str, int]],
     branch_start: int,
     deposit_code: str,
 ) -> bool:
-    """True if a branch guarantees a positive mint on its own path: either
-    it holds an enforcing require, or it assigns `minted`/`shares` from a
-    value with a top-level positive require (e.g. `minted = msg.value`
-    with `require(msg.value > 0)`).
+    """True if a branch guarantees a positive mint on its own path, at the
+    end of the branch: either it holds an enforcing require, or it assigns
+    `minted`/`shares` from a value with a top-level positive require (e.g.
+    `minted = msg.value` with `require(msg.value > 0)`).
 
-    The assignment must be a plain top-level statement of the arm: an
-    assignment nested in an inner `if` runs only when that branch is
-    taken. A guarded copy counts only if the guard stating `X > 0`
+    The proof is a state machine over the arm's top-level statements, in
+    order: an enforcing require or a credited guarded copy sets the arm
+    covered; any other top-level write to `minted`/`shares` clears it (a
+    later require re-proves the arm, and a re-copy from the same guarded
+    value is itself a proof point). The assignment must be a plain
+    top-level statement of the arm: an assignment nested in an inner `if`
+    runs only when that branch is taken, so it neither proves the arm nor
+    clears it (recorded limitation, same path-insensitivity family as
+    H1/H2). A guarded copy counts only if the guard stating `X > 0`
     precedes the copy and `X` is not rewritten between the guard and the
     copy."""
-    if any(
-        condition_enforces(condition, POSITIVE_SHARE)
-        for condition, _ in top_level_guard_conditions(branch)
-    ):
-        return True
+    covered = False
     for statement, stmt_start in _top_level_statements(branch):
-        match = re.fullmatch(r"\s*(?:minted|shares)\s*=\s*([\w.]+)\s*;", statement)
-        if match is None:
+        if any(
+            condition_enforces(condition, POSITIVE_SHARE)
+            for condition, _ in top_level_guard_conditions(statement)
+        ):
+            covered = True
             continue
-        value = match.group(1)
-        assign_offset = branch_start + stmt_start + (len(statement) - len(statement.lstrip()))
-        pattern = re.compile(rf"{re.escape(value)}\s*(?:>\s*0|>=\s*1)")
-        for condition, guard_offset in guard_pairs:
-            if guard_offset >= assign_offset:
-                continue
-            if not condition_enforces(condition, pattern):
-                continue
-            if _written_between(deposit_code, guard_offset, assign_offset, value):
-                continue
-            return True
-    return False
+        match = re.fullmatch(r"\s*(?:minted|shares)\s*=\s*([\w.]+)\s*;", statement)
+        if match is not None:
+            value = match.group(1)
+            assign_offset = branch_start + stmt_start + (len(statement) - len(statement.lstrip()))
+            pattern = re.compile(rf"{re.escape(value)}\s*(?:>\s*0|>=\s*1)")
+            credited = False
+            for condition, guard_offset in guard_pairs:
+                if guard_offset >= assign_offset:
+                    continue
+                if not condition_enforces(condition, pattern):
+                    continue
+                if _written_between(deposit_code, guard_offset, assign_offset, value):
+                    continue
+                credited = True
+                break
+            covered = credited
+            continue
+        if _TOP_LEVEL_WRITE.match(statement):
+            covered = False
+    return covered
+
+
+def _last_consumer_end(body: str, stmt_end: int) -> int:
+    """End offset of the last top-level statement after `stmt_end` that
+    reads `minted` or `shares`, or `len(body)` when there is none.
+
+    A statement reads the mint value when it mentions `minted`/`shares`
+    without being solely a write to that name (`totalShares += minted;`
+    and `shares[msg.sender] += minted;` read it; `minted = 0;` does not).
+    The post-join write check stops at this consumer: a write after the
+    share update cannot change the credited amount. The bound is the LAST
+    consumer because a deposit can credit the mint twice (SafePool credits
+    `totalShares` and then `shares[msg.sender]`); a write between the two
+    credits must still invalidate the proof.
+    """
+    consumer_end = len(body)
+    for statement, stmt_start in _top_level_statements(body):
+        stmt_end_offset = stmt_start + len(statement)
+        if stmt_end_offset <= stmt_end:
+            continue
+        if not re.search(r"\b(?:minted|shares)\b", statement):
+            continue
+        if _TOP_LEVEL_WRITE.match(statement):
+            continue
+        consumer_end = stmt_end_offset
+    return consumer_end
 
 
 def _body_has_zero_mint_guard(body: str) -> bool:
@@ -192,8 +242,10 @@ def _body_has_zero_mint_guard(body: str) -> bool:
     Guards are checked per body: a guard in `convertToShares` says nothing
     about a `deposit` that never calls it. The two-arm proof holds only at
     the share update: a write to `minted`/`shares` after the if/else join
-    invalidates it (the top-level-guard path stays position-insensitive —
-    the recorded H1/H2 limitation). An indexed write such as
+    invalidates it, but only up to the last statement that consumes the
+    mint value — a write after the share update cannot change the credited
+    amount (the top-level-guard path stays position-insensitive — the
+    recorded H1/H2 limitation). An indexed write such as
     `shares[msg.sender] += minted` does not invalidate it: it credits a
     balance with the mint, it does not replace the mint value.
     """
@@ -215,9 +267,10 @@ def _body_has_zero_mint_guard(body: str) -> bool:
             and _branch_covers_mint(else_body, top_guard_pairs, else_start, body)
         ):
             continue
-        if _written_between(body, stmt_end, len(body), "minted", include_indexed=False):
+        consumer_end = _last_consumer_end(body, stmt_end)
+        if _written_between(body, stmt_end, consumer_end, "minted", include_indexed=False):
             continue
-        if _written_between(body, stmt_end, len(body), "shares", include_indexed=False):
+        if _written_between(body, stmt_end, consumer_end, "shares", include_indexed=False):
             continue
         return True
     return bool(re.search(
@@ -239,14 +292,16 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
             # A guard inside `if (...) { ... }` is skipped when the branch
             # is not taken, so it enforces nothing. A parenthesized guard
             # `(minted > 0)` at the top level still counts.
-            # The check runs per function body: a guard in `convertToShares`
-            # says nothing about a `deposit` that never calls it. The
-            # finding stands if ANY body assigning `minted`/`shares` lacks
-            # its own guard (at most one finding per contract).
+            # The check runs per `deposit` body: a guard in `convertToShares`
+            # says nothing about a `deposit` that never calls it, and a
+            # read-only converter need not reject zero shares (ERC-4626
+            # requires it to round down). The finding stands if ANY
+            # `deposit` assigning `minted`/`shares` lacks its own guard
+            # (at most one finding per contract).
             zero_guard = all(
                 _body_has_zero_mint_guard(f.code_body)
                 for f in funcs
-                if f.name in {"deposit", "convertToShares"}
+                if f.name == "deposit"
                 and re.search(r"\b(?:minted|shares)\s*=", f.code_body)
             )
             seeded = bool(re.search(r"DEAD_SHARES|_VIRTUAL_SHARES", code))

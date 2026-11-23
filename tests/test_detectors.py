@@ -571,6 +571,74 @@ class DetectorTests(unittest.TestCase):
                 self.assertEqual(len(findings), 1)
                 self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
 
+    def test_precision_accepts_write_after_share_update(self):
+        # The post-join write check stops at the last statement consuming
+        # the mint: a write after the share update cannot change the
+        # credited amount, so it does not invalidate the two-arm proof.
+        # A write between the two credits (totalShares, then shares) still
+        # invalidates it, because the second credit would be zero.
+        for writes, expected in (
+            ("totalShares += minted;\n                        minted = 0;", 0),
+            ("totalShares += minted;\n                        minted = 0;\n                        shares[msg.sender] += minted;", 1),
+        ):
+            with self.subTest(writes=writes):
+                source = f"""
+                contract SyntheticPool {{
+                    uint256 totalShares;
+                    uint256 totalAssets;
+                    mapping(address => uint256) shares;
+                    function deposit(uint256 assets) external {{
+                        require(assets > 0);
+                        uint256 minted;
+                        if (totalShares == 0) {{
+                            minted = assets;
+                        }} else {{
+                            minted = assets * totalShares / totalAssets;
+                            require(minted > 0);
+                        }}
+                        {writes}
+                    }}
+                }}
+                """
+                findings = precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
+                self.assertEqual(len(findings), expected)
+                if expected:
+                    self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
+
+    def test_precision_flags_branch_proof_overwritten_in_arm(self):
+        # A branch proof must survive to the branch end: an overwrite of
+        # the proved value later in the same arm breaks the proof, even
+        # though the first assignment was credited. A later require
+        # re-proves the arm, and a re-copy from the same guarded value is
+        # itself a proof point.
+        for bootstrap_arm, expected in (
+            ("minted = assets;\n                            minted = 0;", 1),
+            ("minted = 0;\n                            require(minted > 0);", 0),
+            ("minted = assets;\n                            minted = assets;", 0),
+        ):
+            with self.subTest(bootstrap_arm=bootstrap_arm):
+                source = f"""
+                contract SyntheticPool {{
+                    uint256 totalShares;
+                    uint256 totalAssets;
+                    function deposit(uint256 assets) external {{
+                        require(assets > 0);
+                        uint256 minted;
+                        if (totalShares == 0) {{
+                            {bootstrap_arm}
+                        }} else {{
+                            minted = assets * totalShares / totalAssets;
+                            require(minted > 0);
+                        }}
+                        totalShares += minted;
+                    }}
+                }}
+                """
+                findings = precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
+                self.assertEqual(len(findings), expected)
+                if expected:
+                    self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
+
     def test_precision_flags_guarded_convert_to_shares_with_unguarded_deposit(self):
         # A positive-share guard in `convertToShares` says nothing about a
         # `deposit` that never calls it: each function body is checked
@@ -587,6 +655,37 @@ class DetectorTests(unittest.TestCase):
                     function convertToShares(uint256 assets) public view returns (uint256 shares) {{
                         shares = assets * totalShares / totalAssets;
                         require(shares > 0);
+                        return shares;
+                    }}
+                    function deposit(uint256 assets) external {{
+                        uint256 minted = assets * totalShares / totalAssets;
+                        {deposit_guard}
+                        totalShares += minted;
+                    }}
+                }}
+                """
+                findings = precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
+                self.assertEqual(len(findings), expected)
+                if expected:
+                    self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
+
+    def test_precision_accepts_unguarded_convert_to_shares_with_guarded_deposit(self):
+        # Only the state-changing mint path must reject zero shares: an
+        # unguarded `convertToShares` that assigns and returns `shares`
+        # does not make a guarded `deposit` accept a zero mint (a
+        # conversion rounds down and must not revert). An unguarded
+        # deposit is still flagged.
+        for deposit_guard, expected in (
+            ("require(minted > 0);", 0),
+            ("", 1),
+        ):
+            with self.subTest(deposit_guard=deposit_guard or "none"):
+                source = f"""
+                contract SyntheticPool {{
+                    uint256 totalShares;
+                    uint256 totalAssets;
+                    function convertToShares(uint256 assets) public view returns (uint256 shares) {{
+                        shares = assets * totalShares / totalAssets;
                         return shares;
                     }}
                     function deposit(uint256 assets) external {{
