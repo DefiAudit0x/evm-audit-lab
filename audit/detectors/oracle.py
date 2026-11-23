@@ -18,16 +18,17 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
         delegates_price_validation = (
             "sequencer.latestRoundData" in code and "super._validatedPrice" in code
         )
-        round_data_calls = list(re.finditer(r"latestRoundData", code))
-        sequencer_only_round_data = bool(round_data_calls) and all(
-            re.search(r"\bsequencer\s*\.\s*$", code[:match.start()])
-            for match in round_data_calls
-        )
-        if (
-            contract.name != "FakeOracle"
-            and round_data_calls
-            and not (delegates_price_validation and sequencer_only_round_data)
-        ):
+        functions = list(function_blocks(contract))
+        for function in functions:
+            code = function.code_body
+            round_data_calls = list(re.finditer(r"\blatestRoundData\s*\(", code))
+            if contract.name == "FakeOracle" or not round_data_calls:
+                continue
+            if delegates_price_validation and all(
+                re.search(r"\bsequencer\s*\.\s*$", code[:match.start()])
+                for match in round_data_calls
+            ):
+                continue
             checks = {
                 "positive answer": bool(re.search(r"(?:price|answer)\s*>\s*0", code)),
                 "freshness bound": bool(re.search(r"block\.timestamp\s*-\s*\w+\s*<\s*(?:MAX_STALENESS|\d+)", code)),
@@ -45,7 +46,7 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                         title="Oracle answer is missing validation checks",
                         message="Missing checks: " + ", ".join(missing) + ".",
                         file=relative_path(root, source_path),
-                        line=contract.line(contract.start),
+                        line=contract.line(function.start),
                         contract=contract.name,
                     )
                 )
@@ -55,7 +56,7 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                 r"\breturn\s+[\s(]*reserve\w*[\s()]*\*[\s()]*1e18[\s()]*/[\s()]*reserve\w*[\s)]*;",
                 function.code_body,
             )
-            for function in function_blocks(contract)
+            for function in functions
         )
         if spot_function:
             findings.append(

@@ -59,8 +59,9 @@ forge test --match-contract UupsTakeoverTest --match-test testVulnerableProxyCan
 forge test --match-contract UupsTakeoverTest --match-test testSafeProxyInitializationIsAtomicAndLocked -vvv
 ```
 
-Against the safe deployment both takeover attempts revert (proxy already
-initialized; implementation locked), the upgrade attempt fails at the owner
-gate, and the proxy's funds are untouched.
+Against the safe deployment both initialization attempts revert: the proxy is
+already initialized and the implementation is locked. A non-owner's upgrade
+to a UUID-compatible implementation reverts with `not owner`, leaving the
+proxy's implementation slot and balance unchanged.
 
 Companion report: [Audit-Reports/010 — Uninitialized UUPS Proxy Takeover](https://github.com/DefiAudit0x/Audit-Reports/blob/main/010-unprotected-uups-initializer.md).

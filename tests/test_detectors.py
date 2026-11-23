@@ -14,7 +14,7 @@ from audit.detectors.storage_collision import detect_source as detect_storage_co
 
 from audit.detectors import precision, proxy_upgrade, reentrancy
 from audit.detectors.solidity import contract_blocks
-from audit.detectors.storage_collision import EIP1967_IMPLEMENTATION, _dedicated_slot_status
+from audit.detectors.storage_collision import EIP1967_ADMIN, EIP1967_IMPLEMENTATION, _dedicated_slot_status
 
 
 class DetectorTests(unittest.TestCase):
@@ -41,14 +41,136 @@ class DetectorTests(unittest.TestCase):
     def test_reentrancy_ignores_safe_vault(self):
         self.assertNotIn(("reentrancy", "src/SafeVault.sol", "SafeVault"), self.findings)
 
+    def test_reentrancy_body_identifier_does_not_suppress(self):
+        source = """
+        contract Vault {
+            mapping(address => uint256) balances;
+            function withdraw() external {
+                bool nonReentrantEnabled = false;
+                (bool ok,) = msg.sender.call("");
+                require(ok);
+                balances[msg.sender] = 0;
+            }
+        }
+        """
+        findings = reentrancy.detect_source(ROOT, Path("src/Synthetic.sol"), source)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].contract, "Vault")
+
+    def test_reentrancy_delete_state_balance_flags(self):
+        source = """
+        contract Vault {
+            mapping(address => uint256) balances;
+            function withdraw() external {
+                (bool ok,) = msg.sender.call("");
+                require(ok);
+                delete balances[msg.sender];
+            }
+        }
+        """
+        findings = reentrancy.detect_source(ROOT, Path("src/Synthetic.sol"), source)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].contract, "Vault")
+
+    def test_reentrancy_shadow_assignment_only_ignored(self):
+        for parameters, declaration in (
+            ("uint256 balance", ""),
+            ("address payable recipient, uint256 balance", ""),
+            ("", "uint256 balance = 1;"),
+        ):
+            with self.subTest(parameters=parameters, declaration=declaration):
+                source = f"""
+                contract Vault {{
+                    uint256 balance;
+                    function withdraw({parameters}) external {{
+                        {declaration}
+                        (bool ok,) = msg.sender.call("");
+                        require(ok);
+                        balance = 0;
+                    }}
+                }}
+                """
+                self.assertEqual(
+                    reentrancy.detect_source(ROOT, Path("src/Synthetic.sol"), source), []
+                )
+
+    def test_reentrancy_header_modifier_suppresses(self):
+        source = """
+        contract Vault {
+            mapping(address => uint256) balances;
+            modifier nonReentrant() { _; }
+            function withdraw() external nonReentrant {
+                (bool ok,) = msg.sender.call("");
+                require(ok);
+                balances[msg.sender] = 0;
+            }
+        }
+        """
+        self.assertEqual(reentrancy.detect_source(ROOT, Path("src/Synthetic.sol"), source), [])
+
     def test_storage_collision_flags_vulnerable_proxy(self):
         self.assertIn(("storage_collision", "src/VulnerableProxy.sol", "VulnerableProxy"), self.findings)
 
     def test_storage_collision_ignores_safe_proxy(self):
         self.assertNotIn(("storage_collision", "src/SafeProxy.sol", "SafeProxy"), self.findings)
 
+    def test_storage_collision_control_slots_match_identity_and_are_distinct(self):
+        for implementation, admin, status in (
+            (EIP1967_IMPLEMENTATION, EIP1967_IMPLEMENTATION, "invalid"),
+            (EIP1967_ADMIN, EIP1967_IMPLEMENTATION, "invalid"),
+            (EIP1967_IMPLEMENTATION, EIP1967_ADMIN, "valid"),
+        ):
+            with self.subTest(implementation=implementation, admin=admin):
+                source = f"""
+                contract SyntheticProxy {{
+                    bytes32 constant IMPLEMENTATION_SLOT = 0x{implementation};
+                    bytes32 constant ADMIN_SLOT = 0x{admin};
+                    fallback() external {{
+                        assembly {{
+                            let impl := sload(IMPLEMENTATION_SLOT)
+                            let result := delegatecall(gas(), impl, 0, 0, 0, 0)
+                        }}
+                    }}
+                }}
+                """
+                path = Path("src/SyntheticProxy.sol")
+                contract = next(contract_blocks(path, source))
+                self.assertEqual(_dedicated_slot_status(contract), status)
+                findings = detect_storage_collision_source(ROOT, path, source)
+                self.assertEqual(
+                    [finding.title for finding in findings],
+                    ["Proxy control slot does not match the EIP-1967 slot"] if status == "invalid" else [],
+                )
+
     def test_storage_collision_ignores_append_only_upgrade(self):
         self.assertNotIn(("storage_collision", "src/SafeProxy.sol", "SafeImplV2"), self.findings)
+
+    def test_storage_collision_nested_struct_reorder_flags(self):
+        source = """
+        contract NestedV1 {
+            struct Inner { uint128 amount; address owner; }
+            struct Outer { uint256 count; Inner inner; }
+            Outer state;
+            uint128 tail;
+        }
+        contract NestedV2 {
+            struct Inner { address owner; uint128 amount; }
+            struct Outer { uint256 count; Inner inner; }
+            Outer state;
+            uint128 tail;
+        }
+        """
+        findings = detect_storage_collision_source(ROOT, Path("src/Synthetic.sol"), source)
+        self.assertEqual([finding.contract for finding in findings], ["NestedV2"])
+
+    def test_storage_collision_pure_rename_ignored(self):
+        source = """
+        contract RenamedV1 { uint256 amount; }
+        contract RenamedV2 { uint256 balance; }
+        """
+        self.assertEqual(
+            detect_storage_collision_source(ROOT, Path("src/Synthetic.sol"), source), []
+        )
 
     def test_storage_collision_flags_standard_admin_constant_with_slot_zero_implementation(self):
         source = """
@@ -127,6 +249,46 @@ class DetectorTests(unittest.TestCase):
     def test_precision_ignores_safe_pool(self):
         self.assertNotIn(("precision", "src/SafePool.sol", "SafePool"), self.findings)
 
+    def test_precision_flags_discarded_positive_share_comparison(self):
+        for guard in (
+            "minted > 0;",
+            "bool positive = minted > 0;",
+            # `||` does not enforce: the guard passes when the other side
+            # holds even with a zero mint, so it stays a finding.
+            'require(minted > 0 || totalShares == 0, "zero shares");',
+        ):
+            with self.subTest(guard=guard):
+                findings = self._positive_share_guard_findings(guard)
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
+
+    def test_precision_accepts_enforcing_positive_share_guard(self):
+        for guard in (
+            'require(minted > 0, "zero shares");',
+            "require(minted > 0);",
+            "assert(minted > 0);",
+            "if (minted == 0) revert ZeroShares();",
+            "if (minted == 0) { revert ZeroShares(); }",
+            'require(minted > 0 && totalAssets > 0, "zero shares");',
+            "assert(minted > 0 && totalShares > 0);",
+        ):
+            with self.subTest(guard=guard):
+                self.assertEqual(self._positive_share_guard_findings(guard), [])
+
+    def _positive_share_guard_findings(self, guard):
+        source = f"""
+        contract SyntheticPool {{
+            uint256 totalShares;
+            uint256 totalAssets;
+            function deposit(uint256 assets) external {{
+                uint256 minted = assets * totalShares / totalAssets;
+                {guard}
+                totalShares += minted;
+            }}
+        }}
+        """
+        return precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
+
     def test_access_control_flags_vulnerable_access(self):
         self.assertIn(("access_control", "src/VulnerableAccess.sol", "VulnerableAccess"), self.findings)
 
@@ -151,6 +313,32 @@ class DetectorTests(unittest.TestCase):
         findings = detect_source(ROOT, Path("src/SyntheticMint.sol"), source)
         self.assertTrue(any(finding.contract == "SyntheticMint" for finding in findings))
 
+    def test_access_control_flags_conditional_mint_guard(self):
+        for guard in (
+            "if (check) { require(msg.sender == owner); }",
+            "if (check) require(msg.sender == owner);",
+            "if (check) {} else require(msg.sender == owner);",
+            "check ? require(msg.sender == owner) : assert(true);",
+        ):
+            with self.subTest(guard=guard):
+                self.assertEqual(len(self._mint_guard_findings(guard)), 1)
+
+    def test_access_control_accepts_unconditional_mint_guard(self):
+        self.assertEqual(self._mint_guard_findings("require(msg.sender == owner);"), [])
+
+    def _mint_guard_findings(self, guard):
+        source = f"""
+        contract SyntheticMint {{
+            address owner;
+            uint256 totalSupply;
+            function mint(uint256 amount, bool check) external {{
+                {guard}
+                totalSupply += amount;
+            }}
+        }}
+        """
+        return detect_source(ROOT, Path("src/SyntheticMint.sol"), source)
+
     def test_access_control_flags_unprotected_initializer(self):
         self.assertIn(("access_control", "src/VulnerableUupsVault.sol", "VulnerableUupsVault"), self.findings)
 
@@ -162,6 +350,54 @@ class DetectorTests(unittest.TestCase):
 
     def test_proxy_upgrade_ignores_safe_uups_vault(self):
         self.assertNotIn(("proxy_upgrade", "src/SafeUupsVault.sol", "SafeUupsVault"), self.findings)
+
+    def test_proxy_upgrade_accepts_enforced_checks_for_renamed_candidate(self):
+        for enforcement in ("require", "assert"):
+            with self.subTest(enforcement=enforcement):
+                source = f"""
+                contract Vault {{
+                    function upgradeToAndCall(address candidate, bytes calldata data) external {{
+                        {enforcement}(candidate.code.length > 0);
+                        {enforcement}(IERC1822(candidate).proxiableUUID() == IMPLEMENTATION_SLOT);
+                        {enforcement}(address(this) != SELF);
+                    }}
+                }}
+                """
+                self.assertEqual(proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source), [])
+
+        source = (ROOT / "src/SafeUupsVault.sol").read_text().replace("newImpl", "candidate")
+        self.assertEqual(proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source), [])
+
+    def test_proxy_upgrade_flags_discarded_checks_and_fake_only_proxy(self):
+        source = """
+        contract Vault {
+            function upgradeToAndCall(address newImpl, bytes calldata data) external {
+                newImpl.code.length;
+                IERC1822(newImpl).proxiableUUID();
+                address(this) != SELF;
+                bool onlyProxy = false;
+            }
+        }
+        """
+        findings = proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source)
+        self.assertEqual(len(findings), 1)
+        for check in ("implementation code check", "UUPS proxiableUUID compatibility", "proxy-only execution context"):
+            self.assertIn(check, findings[0].message)
+
+    def test_proxy_upgrade_checks_must_reference_candidate_parameter(self):
+        source = """
+        contract Vault {
+            address newImpl;
+            function upgradeToAndCall(address candidate, bytes calldata data) external onlyProxy {
+                require(newImpl.code.length > 0);
+                require(IERC1822(newImpl).proxiableUUID() == IMPLEMENTATION_SLOT);
+            }
+        }
+        """
+        findings = proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("implementation code check", findings[0].message)
+        self.assertIn("UUPS proxiableUUID compatibility", findings[0].message)
 
 
 class DetectorMinorTests(unittest.TestCase):
@@ -262,6 +498,31 @@ class DetectorMinorTests(unittest.TestCase):
             with self.subTest(replacement=replacement):
                 contract = next(contract_blocks(self.path, source.replace("REASSIGN", replacement)))
                 self.assertEqual(_dedicated_slot_status(contract), expected)
+
+    def test_initializer_flag_must_resolve_to_state(self):
+        for parameters, declaration, expected in (
+            ("bool initialized, ", "", True),
+            ("", "bool initialized = false;", True),
+            ("", "", False),
+        ):
+            source = f"""
+            contract Vault {{
+                address owner;
+                bool initialized;
+                function initialize({parameters}address nextOwner) external {{
+                    {declaration}
+                    require(!initialized);
+                    initialized = true;
+                    owner = nextOwner;
+                }}
+            }}
+            """
+            for detector in (detect_source, proxy_upgrade.detect_source):
+                with self.subTest(
+                    detector=detector.__module__, parameters=parameters, declaration=declaration
+                ):
+                    findings = detector(ROOT, self.path, source)
+                    self.assertEqual(len(findings), int(expected), findings)
 
     def test_d07_setting_flag_does_not_guard_initializer(self):
         source = """
@@ -450,6 +711,38 @@ class DetectorMinorTests(unittest.TestCase):
             [item.title for item in findings],
             ["Oracle answer is missing validation checks"],
         )
+
+    def test_oracle_validation_must_be_in_feed_reading_function(self):
+        source = """
+        contract SyntheticOracle {
+            function getPrice() external view returns (uint256) {
+                (uint80 roundId, int256 answer,, uint256 updatedAt, uint80 answeredInRound) =
+                    feed.latestRoundData();
+                %s
+                return uint256(answer);
+            }
+            function validate(uint80 roundId, int256 answer, uint256 updatedAt, uint80 answeredInRound)
+                internal view
+            {
+                %s
+            }
+        }
+        """
+        checks = """
+            require(answer > 0);
+            require(updatedAt <= block.timestamp);
+            require(block.timestamp - updatedAt < 3600);
+            require(answeredInRound >= roundId);
+            answer = answer * int256(10 ** (18 - feed.decimals()));
+        """
+        with self.subTest("unused validating helper"):
+            findings = detect_oracle_source(ROOT, self.path, source % ("", checks))
+            self.assertEqual(
+                [item.title for item in findings],
+                ["Oracle answer is missing validation checks"],
+            )
+        with self.subTest("validated getter"):
+            self.assertEqual(detect_oracle_source(ROOT, self.path, source % (checks, "")), [])
 
     def test_o2_repeat_guard_ordering_only_applies_to_return(self):
         template = """

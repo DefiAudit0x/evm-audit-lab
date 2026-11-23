@@ -28,14 +28,15 @@ function deposit(uint256 amount) external {
 alice.deposit(100) -> credited 100, vault received 90
 bob.deposit(100)   -> credited 100, vault received 90   (real backing: 180)
 
-alice.withdraw(100) -> paid in full                    (backing left: 80)
-bob.withdraw(100)   -> REVERT — only 80 back 100 of claims
+alice.withdraw(100) -> receives 90 (100 contributed)   (backing left: 80)
+bob.withdraw(100)   -> REVERT — only 80 backs 100 of claims
 
-bob's 90 real tokens became 80 frozen ones; alice captured the difference
+Bob's 100 claim exceeds the 80 tokens left in backing after Alice's
+withdrawal, so Bob cannot recover the full amount represented by his claim.
 ```
 
-Cycling deposit/withdraw through the fee token repeats the extraction until
-honest backing is drained.
+Cycling deposit/withdraw through the fee token loses value on each transfer.
+It does not produce a profitable extraction.
 
 ## Remediation
 

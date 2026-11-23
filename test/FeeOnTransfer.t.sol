@@ -16,8 +16,8 @@ import {HookToken} from "./fixtures/HookToken.sol";
 ///   The vault credits `balances[msg.sender] += amount` where `amount` is
 ///   what the depositor *instructed*, while a 10% fee-on-transfer token
 ///   delivers only 90%. Every deposit mints 10% more claims than backing.
-///   The shortfall is socialized: whoever withdraws first is paid in full,
-///   and the last depositors find the vault short.
+///   The shortfall is socialized: the first depositor receives only 90 for
+///   contributing 100, and the last depositor finds the vault short.
 ///
 /// Violated invariant:
 ///   "Credited claims must equal value actually received by the vault."
@@ -25,9 +25,8 @@ import {HookToken} from "./fixtures/HookToken.sol";
 /// Reproduction (10% fee token, two depositors of 100 each):
 ///   1. Alice deposits 100 -> credited 100, vault received 90.
 ///   2. Bob deposits 100   -> credited 100, vault received 90 (real: 180).
-///   3. Alice withdraws 100 -> paid in full (vault real balance 80).
+///   3. Alice withdraws 100 -> receives 90 (vault real balance 80).
 ///   4. Bob withdraws 100   -> reverts: only 80 tokens remain for 100 claims.
-///   Bob's 90 real tokens became 80 frozen tokens; Alice captured 10.
 ///
 /// Remediation (see SafeFotVault):
 ///   Balance-delta accounting credits the observed balance change and a shared
@@ -71,15 +70,14 @@ contract FeeOnTransferTest is Test {
         assertEq(vault.balances(bob), DEPOSIT, "bob over-credited");
         assertEq(token.balanceOf(address(vault)), 180e18, "real backing is 180");
 
-        // Alice exits whole (the token's own fee applies on the way out too:
-        // she instructs 100, receives 90); Bob is left short.
+        // Alice contributed 100 and receives 90 after the token fee on exit.
         vm.prank(alice);
         vault.withdraw(DEPOSIT);
-        assertEq(token.balanceOf(alice), 90e18, "alice paid in full, minus the token fee");
+        assertEq(token.balanceOf(alice), 90e18, "alice receives 90 for 100 contributed");
 
         vm.prank(bob);
         vm.expectRevert();
-        vault.withdraw(DEPOSIT); // only 80e18 back 100e18 of claims
+        vault.withdraw(DEPOSIT); // Bob's 100 claim exceeds the 80e18 backing
 
         assertEq(token.balanceOf(address(vault)), 80e18, "bob's backing leaked to alice");
     }

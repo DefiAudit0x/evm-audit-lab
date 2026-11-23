@@ -9,8 +9,16 @@ from check_slither import ACCEPTED
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_DEFAULT_ALLOWLIST = [
-    {"path": path, "check": check, "reason": reason}
-    for (path, check), reason in sorted(ACCEPTED.items())
+    {
+        "path": path,
+        "check": check,
+        "lines": lines,
+        "reason": entry.reason,
+        "owner": entry.owner,
+        "expires": entry.expires.isoformat(),
+        "anchor": entry.anchor,
+    }
+    for (path, check, lines), entry in sorted(ACCEPTED.items())
 ]
 
 
@@ -51,16 +59,36 @@ def raw(*items):
 
 
 def policy(required=(), forbidden=None, allowed=()):
+    entries = []
+    for entry in allowed:
+        if len(entry) == 3:
+            path, check, reason = entry
+            lines, owner, expires, anchor = (
+                "5-6",
+                "DefiAudit0x",
+                "2099-01-01",
+                "test",
+            )
+        else:
+            path, check, reason, lines, owner, expires, anchor = entry
+        entries.append(
+            {
+                "path": path,
+                "check": check,
+                "lines": lines,
+                "reason": reason,
+                "owner": owner,
+                "expires": expires,
+                "anchor": anchor,
+            }
+        )
     return {
         "schema_version": 1,
         "required_detections": [
             {"path": p, "check": c} for p, c in required
         ],
         "forbidden_on_safe": forbidden or {},
-        "allowed_on_safe": [
-            {"path": p, "check": c, "reason": reason}
-            for p, c, reason in allowed
-        ],
+        "allowed_on_safe": entries,
     }
 
 
@@ -194,7 +222,11 @@ class AuditTests(unittest.TestCase):
                     {
                         "path": "src/SafeA.sol",
                         "check": "x",
+                        "lines": "1-2",
                         "reason": " ",
+                        "owner": "o",
+                        "expires": "2099-01-01",
+                        "anchor": "a",
                     }
                 ],
             },
@@ -204,7 +236,11 @@ class AuditTests(unittest.TestCase):
                     {
                         "path": "src/A.sol",
                         "check": "x",
+                        "lines": "1-2",
                         "reason": "why",
+                        "owner": "o",
+                        "expires": "2099-01-01",
+                        "anchor": "a",
                     }
                 ],
             },
@@ -214,8 +250,77 @@ class AuditTests(unittest.TestCase):
                     {
                         "path": "src/SafeVault.sol",
                         "check": "reentrancy-eth",
+                        "lines": "1-2",
                         "reason": "why",
+                        "owner": "o",
+                        "expires": "2099-01-01",
+                        "anchor": "a",
                     }
+                ],
+            },
+            {
+                "schema_version": 1,
+                "allowed_on_safe": [
+                    {
+                        "path": "src/SafeA.sol",
+                        "check": "x",
+                        "lines": "5",
+                        "reason": "why",
+                        "owner": "o",
+                        "expires": "2099-01-01",
+                        "anchor": "a",
+                    }
+                ],
+            },
+            {
+                "schema_version": 1,
+                "allowed_on_safe": [
+                    {
+                        "path": "src/SafeA.sol",
+                        "check": "x",
+                        "lines": "5-2",
+                        "reason": "why",
+                        "owner": "o",
+                        "expires": "2099-01-01",
+                        "anchor": "a",
+                    }
+                ],
+            },
+            {
+                "schema_version": 1,
+                "allowed_on_safe": [
+                    {
+                        "path": "src/SafeA.sol",
+                        "check": "x",
+                        "lines": "1-2",
+                        "reason": "why",
+                        "owner": "o",
+                        "expires": "2099-13-40",
+                        "anchor": "a",
+                    }
+                ],
+            },
+            {
+                "schema_version": 1,
+                "allowed_on_safe": [
+                    {
+                        "path": "src/SafeA.sol",
+                        "check": "x",
+                        "lines": "1-2",
+                        "reason": "why",
+                        "owner": "o",
+                        "expires": "2099-01-01",
+                        "anchor": "a",
+                    },
+                    {
+                        "path": "src/SafeA.sol",
+                        "check": "x",
+                        "lines": "1-2",
+                        "reason": "why again",
+                        "owner": "o",
+                        "expires": "2099-01-01",
+                        "anchor": "b",
+                    },
                 ],
             },
         ]
@@ -376,17 +481,60 @@ class AuditTests(unittest.TestCase):
         return self.build(raw(item), rules, threshold="high")
 
     def test_related_allowlist_does_not_accept_primary(self):
+        # Per-site matching: the related SafeRouter element sits at lines
+        # 2-2, which no exception covers, so the finding is untriaged at
+        # that site and the triage gate fails even though the pair is
+        # allowlisted at 5-6. The primary finding is still not accepted
+        # (no justification).
         result = self.router_allowlist_report(
             "src/VulnerableRouter.sol", "src/SafeRouter.sol"
         )
         finding = result["findings"][0]
         self.assertEqual(finding["locations"][0]["path"], "src/VulnerableRouter.sol")
-        self.assertEqual(finding["disposition"], "observation")
+        self.assertEqual(finding["disposition"], "untriaged")
         self.assertNotIn("justification", finding)
         self.assertEqual(result["summary"]["threshold_failures"], 1)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["gates"][0]["kind"], "safe-triage")
-        self.assertEqual(result["gates"][0]["status"], "passed")
+        self.assertEqual(result["gates"][0]["status"], "failed")
+        self.assertIn("allowlist reason", result["gates"][0]["message"])
+
+    def test_expired_allowlist_entry_does_not_allow(self):
+        result = self.build(
+            raw(detector("src/SafeA.sol")),
+            policy(
+                allowed=[
+                    (
+                        "src/SafeA.sol",
+                        "reentrancy-eth",
+                        "Reviewed scope",
+                        "5-6",
+                        "DefiAudit0x",
+                        "2000-01-01",
+                        "test",
+                    )
+                ]
+            ),
+        )
+        self.assertEqual(result["status"], "failed")
+        gate = [g for g in result["gates"] if g["kind"] == "safe-triage"][0]
+        self.assertEqual(gate["status"], "failed")
+        self.assertIn("expired on 2000-01-01", gate["message"])
+
+    def test_second_site_under_allowed_pair_needs_its_own_entry(self):
+        allowed = policy(
+            allowed=[("src/SafeA.sol", "reentrancy-eth", "Reviewed scope")]
+        )
+        self.assertEqual(
+            self.build(raw(detector("src/SafeA.sol")), allowed)["status"],
+            "passed",
+        )
+        self.assertEqual(
+            self.build(raw(detector("src/SafeA.sol", line=9)), allowed)[
+                "status"
+            ],
+            "failed",
+        )
 
     def test_primary_allowlist_preserves_acceptance(self):
         result = self.router_allowlist_report(

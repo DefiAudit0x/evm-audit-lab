@@ -22,7 +22,13 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
         share_math = bool(re.search(r"\b(?:totalShares|shares)\b", code))
         deposit_code = "\n".join(f.code_body for f in funcs if f.name in {"deposit", "convertToShares"})
         if share_math and deposit_code and "/" in deposit_code:
-            zero_guard = bool(re.search(r"(?:minted|shares)\s*>\s*0|zero shares|zero-share", deposit_code))
+            # A `&&` continuation still enforces the guard (both sides must
+            # hold); a `||` continuation does not, so it stays a finding.
+            zero_guard = bool(re.search(
+                r"\b(?:require|assert)\s*\(\s*(?:minted|shares)\s*>\s*0\s*[,)&]"
+                r"|\bif\s*\(\s*(?:minted|shares)\s*==\s*0\s*\)\s*\{?\s*revert\b",
+                deposit_code,
+            ))
             seeded = bool(re.search(r"DEAD_SHARES|_VIRTUAL_SHARES", code))
             if re.search(r"\b(?:minted|shares)\s*=", deposit_code) and not zero_guard:
                 findings.append(

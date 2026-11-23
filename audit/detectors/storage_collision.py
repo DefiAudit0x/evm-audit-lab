@@ -79,8 +79,10 @@ def _dedicated_slot_status(contract: Contract) -> str:
     )
     if not constants:
         return "missing"
-    expected = {EIP1967_IMPLEMENTATION, EIP1967_ADMIN}
-    if any(value.lower() not in expected for _, value in constants):
+    expected = {"IMPLEMENTATION_SLOT": EIP1967_IMPLEMENTATION, "ADMIN_SLOT": EIP1967_ADMIN}
+    if any(value.lower() != expected[name] for name, value in constants):
+        return "invalid"
+    if len({value.lower() for _, value in constants}) != len(constants):
         return "invalid"
 
     implementation_slots = {
@@ -223,6 +225,73 @@ def _contract_scope_code(body: str) -> str:
     return "".join(chars)
 
 
+def _resolved_storage_layout(contract, by_name):
+    """Flatten struct members into name-independent types, slots and offsets."""
+    structs = {}
+
+    def collect(owner):
+        for base_name in owner.bases:
+            if base_name in by_name:
+                collect(by_name[base_name])
+        for match in re.finditer(r"\bstruct\s+(\w+)\s*\{([^{}]*)\}", owner.code_body):
+            members = []
+            for declaration in match[2].split(";"):
+                parts = declaration.strip().rsplit(None, 1)
+                if len(parts) == 2:
+                    members.append(re.sub(r"\s+", " ", parts[0]))
+            structs[match[1]] = members
+
+    collect(contract)
+
+    def resolve(kind, seen=()):
+        kind = kind.strip()
+        if kind in structs and kind not in seen:
+            return tuple(resolve(member, (*seen, kind)) for member in structs[kind])
+        array = re.fullmatch(r"(.+)\[\s*(\d*)\s*\]", kind)
+        if array:
+            return ("array", resolve(array[1], seen), array[2])
+        if kind in ("uint", "int"):
+            return kind + "256"
+        return kind
+
+    def flatten(types, start=0):
+        layout = []
+        slot, offset = start, 0
+        for kind in types:
+            if isinstance(kind, tuple):
+                slot += bool(offset)
+                offset = 0
+                if kind and kind[0] == "array":
+                    _, element, length = kind
+                    if length:
+                        members, end = flatten([element] * int(length), slot)
+                    else:
+                        members, end = [(kind, slot, 0)], slot + 1
+                else:
+                    members, end = flatten(kind, slot)
+                layout.extend(members)
+                slot = end
+                continue
+            integer = re.fullmatch(r"u?int(\d+)", kind)
+            fixed_bytes = re.fullmatch(r"bytes(\d+)", kind)
+            size = (int(integer[1]) // 8 if integer else
+                    int(fixed_bytes[1]) if fixed_bytes else
+                    20 if kind in ("address", "address payable") else
+                    1 if kind == "bool" else 32)
+            if offset + size > 32 or kind in ("bytes", "string") or kind.startswith("mapping"):
+                slot += bool(offset)
+                offset = 0
+            layout.append((kind, slot, offset))
+            offset += size
+            if offset == 32:
+                slot += 1
+                offset = 0
+        return layout, slot + bool(offset)
+
+    fields = _storage_fields(contract, by_name)
+    return flatten([resolve(kind) for _, kind, _ in fields])[0]
+
+
 def _check_v1_v2_append_only(root, source_path, contracts, by_name):
     findings = []
     for old in contracts:
@@ -232,9 +301,9 @@ def _check_v1_v2_append_only(root, source_path, contracts, by_name):
         new = by_name.get(f"{match.group(1)}V{int(match.group(2)) + 1}")
         if new is None:
             continue
-        # Source locations are useful for findings but do not affect layout.
-        old_fields = [(name, kind) for name, kind, _ in _storage_fields(old, by_name)]
-        new_fields = [(name, kind) for name, kind, _ in _storage_fields(new, by_name)]
+        # Names and source locations do not affect storage layout.
+        old_fields = _resolved_storage_layout(old, by_name)
+        new_fields = _resolved_storage_layout(new, by_name)
         if new_fields[: len(old_fields)] != old_fields:
             findings.append(
                 _finding(
