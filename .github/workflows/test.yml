@@ -33,9 +33,16 @@ jobs:
       - name: Run tests
         env:
           FOUNDRY_PROFILE: ${{ github.event_name == 'schedule' && 'scheduled' || 'default' }}
-        run: forge test -vv
+        run: |
+          forge test -vv
+          # Keep the repository config and forge-std remapping for each mirror.
+          for lab_test in labs/*/test; do
+            FOUNDRY_TEST="$lab_test" forge test --contracts "${lab_test%/test}/src" -vv
+          done
       - name: Check formatting
-        run: forge fmt --check
+        run: |
+          forge fmt --check
+          forge fmt --check labs
       - name: Check lab mirrors
         run: python3 scripts/sync_lab_mirrors.py --check
       - name: Check lab manifests
