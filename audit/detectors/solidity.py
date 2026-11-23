@@ -136,44 +136,58 @@ def contract_blocks(source_path: Path, source: str) -> Iterator[Contract]:
 
 
 def _member_blocks(
-    contract: Contract, pattern: re.Pattern[str], name_group: int | None
+    contract: Contract,
+    pattern: re.Pattern[str],
+    name_group: int | None,
+    default_name: str = "constructor",
 ) -> Iterator[Function]:
     body = contract.code_body
     for match in pattern.finditer(body):
         open_paren = body.find("(", match.start())
-        depth = 0
-        close_paren = None
-        for index in range(open_paren, len(body)):
-            if body[index] == "(":
-                depth += 1
-            elif body[index] == ")":
-                depth -= 1
-                if depth == 0:
-                    close_paren = index
+        # Text between the end of the name match and the next `(`: a `{`
+        # there means the member omits its parameter list
+        # (`modifier refresh { ... }`) and the body starts at that `{`;
+        # anything else between the name and the `(` is not a parameter
+        # list, so the match is skipped.
+        between = body[match.end() : open_paren] if open_paren != -1 else body[match.end() :]
+        if "{" in between:
+            delimiter = match.end() + between.index("{")
+        elif open_paren != -1 and not between.strip():
+            depth = 0
+            close_paren = None
+            for index in range(open_paren, len(body)):
+                if body[index] == "(":
+                    depth += 1
+                elif body[index] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        close_paren = index
+                        break
+            if close_paren is None:
+                continue
+            cursor = close_paren + 1
+            delimiter = None
+            paren_depth = 0
+            while cursor < len(body):
+                char = body[cursor]
+                if char == "(":
+                    paren_depth += 1
+                elif char == ")":
+                    paren_depth -= 1
+                elif paren_depth == 0 and char in "{;":
+                    delimiter = cursor
                     break
-        if close_paren is None:
-            continue
-        cursor = close_paren + 1
-        delimiter = None
-        paren_depth = 0
-        while cursor < len(body):
-            char = body[cursor]
-            if char == "(":
-                paren_depth += 1
-            elif char == ")":
-                paren_depth -= 1
-            elif paren_depth == 0 and char in "{;":
-                delimiter = cursor
-                break
-            cursor += 1
-        if delimiter is None or body[delimiter] != "{":
+                cursor += 1
+            if delimiter is None or body[delimiter] != "{":
+                continue
+        else:
             continue
         end = matching_brace(body, delimiter)
         if end is None:
             continue
         absolute_start = contract.body_start + match.start()
         absolute_body_start = contract.body_start + delimiter + 1
-        name = match.group(name_group) if name_group is not None else "constructor"
+        name = match.group(name_group) if name_group is not None else default_name
         yield Function(
             name=name,
             header=contract.source[absolute_start:absolute_body_start],
@@ -192,13 +206,28 @@ def function_blocks(contract: Contract) -> Iterator[Function]:
 
 
 def modifier_blocks(contract: Contract) -> Iterator[Function]:
+    # Solidity permits `modifier refresh { ... }` without a parameter list;
+    # the pattern must not require `(` — `_member_blocks` handles the
+    # paren-less form. (Functions always have a parameter list.)
     return _member_blocks(
-        contract, re.compile(r"\bmodifier\s+([A-Za-z_]\w*)\s*\("), 1
+        contract, re.compile(r"\bmodifier\s+([A-Za-z_]\w*)"), 1
     )
 
 
 def constructor_blocks(contract: Contract) -> Iterator[Function]:
     return _member_blocks(contract, re.compile(r"\bconstructor\s*\("), None)
+
+
+def fallback_blocks(contract: Contract) -> Iterator[Function]:
+    return _member_blocks(
+        contract, re.compile(r"\bfallback\s*\("), None, "fallback"
+    )
+
+
+def receive_blocks(contract: Contract) -> Iterator[Function]:
+    return _member_blocks(
+        contract, re.compile(r"\breceive\s*\("), None, "receive"
+    )
 
 
 def solidity_files(root: Path) -> list[tuple[Path, str]]:
@@ -291,14 +320,85 @@ def call_condition(code: str, open_paren: int) -> str | None:
     return inner
 
 
-def require_conditions(code: str) -> list[str]:
-    """Conditions of every `require(...)`/`assert(...)` call in cleaned code."""
+def top_level_guard_conditions(body: str) -> list[tuple[str, int]]:
+    """Conditions of require/assert calls that start a top-level statement,
+    with each guard's statement offset in `body`.
+
+    A guard inside `if (...) { ... }` (or an unbraced branch) does not count:
+    it only runs when the branch is taken. Mirrors the statement-start
+    scanning of `access_control._has_top_level_guard`. The offset lets a
+    caller check what happened between a probe and its guard.
+    """
     conditions = []
-    for match in re.finditer(r"\b(?:require|assert)\s*\(", code):
-        condition = call_condition(code, match.end() - 1)
-        if condition is not None:
-            conditions.append(condition)
+    braces = parentheses = 0
+    statement_start = True
+    for token in re.finditer(r"\w+|[^\s]", body):
+        if braces == parentheses == 0 and statement_start:
+            match = re.match(r"(?:require|assert)\s*\(", body[token.start():])
+            if match:
+                condition = call_condition(body, token.start() + match.end() - 1)
+                if condition is not None:
+                    conditions.append((condition, token.start()))
+        char = token.group()
+        if char == "{":
+            braces += 1
+        elif char == "}":
+            braces -= 1
+        elif char == "(":
+            parentheses += 1
+        elif char == ")":
+            parentheses -= 1
+        # An unbraced branch or ternary is still part of the current statement.
+        statement_start = braces == parentheses == 0 and char in (";", "}")
     return conditions
+
+
+def _bool_wrapper(text: str) -> tuple[str, str, str] | None:
+    """Split a trailing top-level `==`/`!=` against a boolean literal.
+
+    Returns (lhs, operator, rhs) if the LAST top-level `==` or `!=` in
+    `text` has RHS exactly `true` or `false`; otherwise None. The scan runs
+    from the end and is paren-depth-aware, so only the outermost operator
+    is found. `>=`/`<=` are not equality operators and are ignored.
+    """
+    depth = 0
+    index = len(text) - 1
+    while index > 0:
+        char = text[index]
+        if char == ")":
+            depth += 1
+        elif char == "(":
+            depth -= 1
+        elif depth == 0 and char == "=" and text[index - 1] in ("=", "!"):
+            operator = text[index - 1 : index + 1]
+            rhs = text[index + 1 :].strip()
+            if rhs in ("true", "false"):
+                return text[: index - 1].strip(), operator, rhs
+            return None
+        index -= 1
+    return None
+
+
+def _conjunct_enforces(conjunct: str, wanted: re.Pattern[str]) -> bool:
+    """True if one top-level `&&` conjunct enforces `wanted` as a complete
+    comparison. A conjunct starting with `!` never counts, and a conjunct
+    that is itself a disjunction does not count. A trailing `==`/`!=`
+    against a boolean literal wraps the comparison: `== true` / `!= false`
+    preserve it (recurse on the LHS) while `== false` / `!= true` invert
+    it (reject the conjunct).
+    """
+    stripped = strip_outer_parens(conjunct)
+    if stripped.startswith("!"):
+        return False
+    if len(split_top_level(stripped, "||")) != 1:
+        return False
+    wrapper = _bool_wrapper(stripped)
+    if wrapper is not None:
+        lhs, operator, rhs = wrapper
+        if (operator == "==" and rhs == "true") or (operator == "!=" and rhs == "false"):
+            return _conjunct_enforces(lhs, wanted)
+        return False
+    return wanted.fullmatch(stripped) is not None
 
 
 def condition_enforces(condition: str, wanted: re.Pattern[str]) -> bool:
@@ -306,24 +406,18 @@ def condition_enforces(condition: str, wanted: re.Pattern[str]) -> bool:
 
     A top-level `||` lets the call continue when another disjunct holds, so
     the condition must have exactly one top-level `||` part. Within it, some
-    top-level `&&` conjunct (after stripping balanced outer parens) must
-    match `wanted` — and the conjunct must itself be a single comparison,
-    not a disjunction wrapped in parens: `(x > 0 || y > 0)` passes when
-    `y > 0` holds with `x == 0`, so it enforces nothing. A conjunct
-    starting with `!` never counts: `!(x > 0)` does not enforce `x > 0`.
+    top-level `&&` conjunct must match `wanted` as a COMPLETE comparison:
+    a substring match is not enough — `(minted > 0) == false` contains the
+    comparison but requires it to be false, so it enforces nothing. See
+    `_conjunct_enforces` for the wrapper rule.
     """
     parts = split_top_level(condition, "||")
     if len(parts) != 1:
         return False
-    for conjunct in split_top_level(parts[0], "&&"):
-        stripped = strip_outer_parens(conjunct)
-        if stripped.startswith("!"):
-            continue
-        if len(split_top_level(stripped, "||")) != 1:
-            continue
-        if wanted.search(stripped):
-            return True
-    return False
+    return any(
+        _conjunct_enforces(conjunct, wanted)
+        for conjunct in split_top_level(parts[0], "&&")
+    )
 
 
 def relative_path(root: Path, path: Path) -> str:

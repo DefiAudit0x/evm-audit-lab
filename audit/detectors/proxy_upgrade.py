@@ -8,12 +8,12 @@ import re
 from .access_control import _initializer_state_flags
 from .finding import Finding
 from .solidity import (
-    call_condition,
     condition_enforces,
     contract_blocks,
     function_blocks,
     relative_path,
     solidity_files,
+    top_level_guard_conditions,
 )
 from .storage_collision import _storage_fields
 
@@ -42,35 +42,17 @@ def _has_repeat_guard(header: str, body: str, state_flags: set[str]) -> bool:
     return False
 
 
-def _top_level_guard_conditions(body: str) -> list[str]:
-    """Conditions of require/assert calls that start a top-level statement.
-
-    A guard inside `if (...) { ... }` (or an unbraced branch) does not count:
-    it only runs when the branch is taken. Mirrors the statement-start
-    scanning of `access_control._has_top_level_guard`.
-    """
-    conditions = []
-    braces = parentheses = 0
-    statement_start = True
-    for token in re.finditer(r"\w+|[^\s]", body):
-        if braces == parentheses == 0 and statement_start:
-            match = re.match(r"(?:require|assert)\s*\(", body[token.start():])
-            if match:
-                condition = call_condition(body, token.start() + match.end() - 1)
-                if condition is not None:
-                    conditions.append(condition)
-        char = token.group()
-        if char == "{":
-            braces += 1
-        elif char == "}":
-            braces -= 1
-        elif char == "(":
-            parentheses += 1
-        elif char == ")":
-            parentheses -= 1
-        # An unbraced branch or ternary is still part of the current statement.
-        statement_start = braces == parentheses == 0 and char in (";", "}")
-    return conditions
+def _assigned_between(body: str, start: int, end: int, name: str) -> bool:
+    """True if `name = ...` occurs in body[start:end], plain or as an
+    element of a tuple-assignment LHS, e.g. `(compatible, uuid) = (...)`.
+    A `==` comparison is not an assignment, and a tuple in a call or a
+    return has no `=` after its `)`, so neither is flagged."""
+    window = body[start:end]
+    if re.search(rf"\b{re.escape(name)}\s*=(?!=)", window):
+        return True
+    return re.search(
+        rf"\([^()]*\b{re.escape(name)}\b[^()]*\)\s*=(?!=)", window
+    ) is not None
 
 
 def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
@@ -101,9 +83,10 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
             parameters, _, modifiers = function.code_header.partition(")")
             candidate = re.search(r"\baddress\s+(?:payable\s+)?([A-Za-z_]\w*)\s*(?:,|$)", parameters)
             candidate_name = re.escape(candidate.group(1)) if candidate else r"(?!)"
-            guards = _top_level_guard_conditions(body)
+            guard_pairs = top_level_guard_conditions(body)
+            guards = [condition for condition, _ in guard_pairs]
             uuid_pattern = re.compile(
-                rf"\b\w+\s*\(\s*{candidate_name}\s*\)\s*\.\s*proxiableUUID\s*\(\s*\)\s*=="
+                rf"\b\w+\s*\(\s*{candidate_name}\s*\)\s*\.\s*proxiableUUID\s*\(\s*\)\s*==\s*.+"
             )
             compatible = any(
                 condition_enforces(guard, uuid_pattern) for guard in guards
@@ -114,21 +97,33 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                 rf"{candidate_name}\s*\.\s*staticcall\s*\([^;]*\bproxiableUUID\b[^;]*;",
                 body,
             ):
+                success_name, uuid_name = probe.groups()
                 success, uuid = map(re.escape, probe.groups())
                 success_pattern = re.compile(
                     rf"^(?:{success}\s*==\s*true|{success}\s*!=\s*false|{success})$"
                 )
                 decode_pattern = re.compile(
-                    rf"\babi\s*\.\s*decode\s*\(\s*{uuid}\s*,\s*\(\s*bytes32\s*\)\s*\)\s*=="
+                    rf"\babi\s*\.\s*decode\s*\(\s*{uuid}\s*,\s*\(\s*bytes32\s*\)\s*\)\s*==\s*.+"
                 )
                 # Compatible either as one combined guard (`success &&` +
                 # decode comparison) or as two separate top-level guards for
                 # the same probe outputs — one requiring the success flag,
                 # another requiring the decoded value to match the slot.
-                compatible |= (
-                    any(condition_enforces(guard, success_pattern) for guard in guards)
-                    and any(condition_enforces(guard, decode_pattern) for guard in guards)
+                # A probe output reassigned between the probe and a guard
+                # invalidates that guard: it would validate the replacement
+                # value, not the probe result. An assignment AFTER the
+                # guards does not invalidate them.
+                success_ok = any(
+                    condition_enforces(condition, success_pattern)
+                    and not _assigned_between(body, probe.end(), offset, success_name)
+                    for condition, offset in guard_pairs
                 )
+                decode_ok = any(
+                    condition_enforces(condition, decode_pattern)
+                    and not _assigned_between(body, probe.end(), offset, uuid_name)
+                    for condition, offset in guard_pairs
+                )
+                compatible |= success_ok and decode_ok
             missing = []
             if not compatible:
                 missing.append("UUPS proxiableUUID compatibility")

@@ -281,6 +281,37 @@ class DetectorTests(unittest.TestCase):
                 self.assertEqual(len(findings), 1)
                 self.assertEqual(findings[0].title, "Oracle answer is missing validation checks")
 
+    def test_oracle_flags_feed_read_in_fallback_and_receive(self):
+        for unit in (
+            "fallback() external { (, int256 answer, , , ) = AggregatorV3Interface(feed).latestRoundData(); }",
+            "receive() external payable { (, int256 answer, , , ) = AggregatorV3Interface(feed).latestRoundData(); }",
+        ):
+            with self.subTest(unit=unit[:9]):
+                source = f"""
+                contract SyntheticLender {{
+                    address public feed;
+                    {unit}
+                    function borrow() external {{}}
+                }}
+                """
+                findings = detect_oracle_source(ROOT, Path("src/SyntheticLender.sol"), source)
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(findings[0].title, "Oracle answer is missing validation checks")
+
+    def test_oracle_flags_feed_read_in_paren_less_modifier(self):
+        # Solidity permits `modifier refresh { ... }` without a parameter
+        # list; an unvalidated oracle read inside it must still be scanned.
+        source = """
+        contract SyntheticLender {
+            address public feed;
+            modifier refresh { (, int256 answer, , , ) = AggregatorV3Interface(feed).latestRoundData(); _; }
+            function borrow() external refresh {}
+        }
+        """
+        findings = detect_oracle_source(ROOT, Path("src/SyntheticLender.sol"), source)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].title, "Oracle answer is missing validation checks")
+
     def test_precision_flags_vulnerable_pool(self):
         self.assertIn(("precision", "src/VulnerablePool.sol", "VulnerablePool"), self.findings)
 
@@ -301,11 +332,70 @@ class DetectorTests(unittest.TestCase):
             # the guard passes when the other side holds with a zero mint.
             'require((minted > 0 || shares > 0), "zero shares");',
             'require((shares > 0 || minted > 0), "zero shares");',
+            # A comparison wrapped in `== false` requires the comparison
+            # to be FALSE — it passes exactly when the mint is zero.
+            'require((minted > 0) == false);',
+            'require(minted > 0 == false);',
         ):
             with self.subTest(guard=guard):
                 findings = self._positive_share_guard_findings(guard)
                 self.assertEqual(len(findings), 1)
                 self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
+
+    def test_precision_flags_conditional_positive_share_guard(self):
+        # A guard inside `if (...) { ... }` only runs when the branch is
+        # taken, so it does not enforce a positive mint on every path.
+        findings = self._positive_share_guard_findings(
+            "if (assets > 1) { require((minted > 0)); }"
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
+
+    def test_precision_accepts_if_else_guarded_mint(self):
+        # An if/else is exhaustive: the else branch's require plus the
+        # if branch's assignment from a positively-required value cover
+        # every path to the mint (the SafePool shape).
+        source = """
+        contract SyntheticPool {
+            uint256 totalShares;
+            uint256 totalAssets;
+            function deposit(uint256 assets) external {
+                require(assets > 0);
+                uint256 minted;
+                if (totalShares == 0) {
+                    minted = assets;
+                } else {
+                    minted = assets * totalShares / totalAssets;
+                    require(minted > 0);
+                }
+                totalShares += minted;
+            }
+        }
+        """
+        self.assertEqual(precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source), [])
+
+    def test_precision_flags_if_else_with_uncovered_branch(self):
+        # The else branch's require does not cover the if branch, which
+        # assigns minted from an amount with no positive require.
+        source = """
+        contract SyntheticPool {
+            uint256 totalShares;
+            uint256 totalAssets;
+            function deposit(uint256 assets) external {
+                uint256 minted;
+                if (totalShares == 0) {
+                    minted = assets;
+                } else {
+                    minted = assets * totalShares / totalAssets;
+                    require(minted > 0);
+                }
+                totalShares += minted;
+            }
+        }
+        """
+        findings = precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
 
     def test_precision_accepts_enforcing_positive_share_guard(self):
         for guard in (
@@ -320,6 +410,8 @@ class DetectorTests(unittest.TestCase):
             "assert((shares > 0));",
             # Doubly parenthesised comparisons still enforce.
             'require(((minted > 0)), "zero shares");',
+            # `== true` preserves the guard (the wrapper rule).
+            'require((minted > 0) == true);',
         ):
             with self.subTest(guard=guard):
                 self.assertEqual(self._positive_share_guard_findings(guard), [])
@@ -529,6 +621,94 @@ class DetectorTests(unittest.TestCase):
         """
         self.assertEqual(proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source), [])
 
+    def test_proxy_upgrade_flags_probe_output_reassigned_before_guards(self):
+        # A probe output reassigned between the probe and the guards makes
+        # the guards validate the replacement value, not the probe result.
+        for reassignment in (
+            "uuid = abi.encode(IMPLEMENTATION_SLOT);",
+            "compatible = true;",
+        ):
+            with self.subTest(reassignment=reassignment):
+                source = f"""
+                contract Vault {{
+                    function upgradeToAndCall(address candidate, bytes calldata data) external {{
+                        require(candidate.code.length > 0);
+                        (bool compatible, bytes memory uuid) = candidate.staticcall(abi.encodeCall(this.proxiableUUID, ()));
+                        {reassignment}
+                        require(compatible);
+                        require(abi.decode(uuid, (bytes32)) == IMPLEMENTATION_SLOT);
+                        require(address(this) != SELF);
+                    }}
+                }}
+                """
+                findings = proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source)
+                self.assertEqual(len(findings), 1)
+                self.assertIn("UUPS proxiableUUID compatibility", findings[0].message)
+                self.assertNotIn("implementation code check", findings[0].message)
+                self.assertNotIn("proxy-only execution context", findings[0].message)
+
+    def test_proxy_upgrade_flags_probe_output_tuple_reassigned_before_guards(self):
+        # A tuple reassignment between the probe and the guards defeats
+        # validation the same way a plain assignment does: the guards
+        # check the replacement values, not the probe result.
+        for reassignment in (
+            "(compatible, uuid) = (true, abi.encode(IMPLEMENTATION_SLOT));",
+            "(uuid, compatible) = (abi.encode(IMPLEMENTATION_SLOT), true);",
+        ):
+            with self.subTest(reassignment=reassignment):
+                source = f"""
+                contract Vault {{
+                    function upgradeToAndCall(address candidate, bytes calldata data) external {{
+                        require(candidate.code.length > 0);
+                        (bool compatible, bytes memory uuid) = candidate.staticcall(abi.encodeCall(this.proxiableUUID, ()));
+                        {reassignment}
+                        require(compatible);
+                        require(abi.decode(uuid, (bytes32)) == IMPLEMENTATION_SLOT);
+                        require(address(this) != SELF);
+                    }}
+                }}
+                """
+                findings = proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source)
+                self.assertEqual(len(findings), 1)
+                self.assertIn("UUPS proxiableUUID compatibility", findings[0].message)
+                self.assertNotIn("implementation code check", findings[0].message)
+                self.assertNotIn("proxy-only execution context", findings[0].message)
+
+    def test_proxy_upgrade_accepts_probe_output_reassigned_after_guards(self):
+        # An assignment AFTER the guards does not invalidate them: they
+        # already validated the real probe outputs.
+        source = """
+        contract Vault {
+            function upgradeToAndCall(address candidate, bytes calldata data) external {
+                require(candidate.code.length > 0);
+                (bool compatible, bytes memory uuid) = candidate.staticcall(abi.encodeCall(this.proxiableUUID, ()));
+                require(compatible);
+                require(abi.decode(uuid, (bytes32)) == IMPLEMENTATION_SLOT);
+                require(address(this) != SELF);
+                uuid = abi.encode(IMPLEMENTATION_SLOT);
+            }
+        }
+        """
+        self.assertEqual(proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source), [])
+
+    def test_proxy_upgrade_flags_wrapped_decode_comparison(self):
+        # `(decode(...) == SLOT) == false` requires the probe result to
+        # DIFFER from the slot, so it does not enforce compatibility.
+        source = """
+        contract Vault {
+            function upgradeToAndCall(address candidate, bytes calldata data) external {
+                require(candidate.code.length > 0);
+                (bool compatible, bytes memory uuid) = candidate.staticcall(abi.encodeCall(this.proxiableUUID, ()));
+                require(compatible);
+                require((abi.decode(uuid, (bytes32)) == IMPLEMENTATION_SLOT) == false);
+                require(address(this) != SELF);
+            }
+        }
+        """
+        findings = proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("UUPS proxiableUUID compatibility", findings[0].message)
+
 
 class DetectorMinorTests(unittest.TestCase):
     path = Path("src/Synthetic.sol")
@@ -623,6 +803,54 @@ class DetectorMinorTests(unittest.TestCase):
         self.assertEqual(layout[0], (("array", "uint256", "100000"), 0, 0, (0,)))
         self.assertEqual(layout[1], ("uint256", 100000, 0, (1,)))
         self.assertEqual(detect_storage_collision_source(ROOT, self.path, source), [])
+
+    def test_storage_collision_nested_array_budget_uses_descriptor(self):
+        # A per-dimension cap alone does not bound nested arrays:
+        # [1024][1024][1024] would materialize 2^30 leaves. The cumulative
+        # budget forces a single descriptor instead.
+        source = """
+        contract LayoutV1 {
+            uint256[1024][1024][1024] values;
+            uint256 tail;
+        }
+        contract LayoutV2 {
+            uint256[1024][1024][1024] values;
+            uint256 tail;
+        }
+        """
+        contracts = list(contract_blocks(self.path, source))
+        by_name = {contract.name: contract for contract in contracts}
+        layout = _resolved_storage_layout(contracts[0], by_name)
+        self.assertEqual(len(layout), 2)
+        self.assertEqual(
+            layout[0][0],
+            ("array", ("array", ("array", "uint256", "1024"), "1024"), "1024"),
+        )
+        self.assertEqual(layout[1], ("uint256", 1024 * 1024 * 1024, 0, (1,)))
+        self.assertEqual(detect_storage_collision_source(ROOT, self.path, source), [])
+
+    def test_storage_collision_array_budget_boundary(self):
+        # [100][100] is 10000 leaves > 4096: a descriptor. [2][2] is 4
+        # leaves and [1024] is 1024 leaves: both still expanded.
+        for declaration, expanded in (
+            ("uint256[100][100] values;", False),
+            ("uint256[2][2] values;", True),
+            ("uint256[1024] values;", True),
+        ):
+            with self.subTest(declaration=declaration):
+                source = f"""
+                contract LayoutV1 {{
+                    {declaration}
+                    uint256 tail;
+                }}
+                """
+                contracts = list(contract_blocks(self.path, source))
+                by_name = {contract.name: contract for contract in contracts}
+                layout = _resolved_storage_layout(contracts[0], by_name)
+                if expanded:
+                    self.assertTrue(all(isinstance(entry[0], str) for entry in layout))
+                else:
+                    self.assertEqual(layout[0][0][0], "array")
 
     def test_d05_standard_slot_does_not_isolate_ordinary_storage(self):
         source = f"""
@@ -729,6 +957,30 @@ class DetectorMinorTests(unittest.TestCase):
             with self.subTest(detector=detector.__module__):
                 findings = detector(ROOT, self.path, source)
                 self.assertEqual(len(findings), 1, findings)
+
+    def test_initializer_flag_tuple_two_bools_both_shadow(self):
+        # A tuple declaring two `bool` locals must shadow the flag for
+        # EITHER name: the greedy pattern used to capture only the last
+        # name in the tuple.
+        for flag in ("initialized", "scratch"):
+            with self.subTest(flag=flag):
+                source = f"""
+                contract Vault {{
+                    address owner;
+                    bool initialized;
+                    bool scratch;
+                    function initialize(address nextOwner) external {{
+                        (bool initialized, bool scratch) = (false, false);
+                        require(!{flag});
+                        {flag} = true;
+                        owner = nextOwner;
+                    }}
+                }}
+                """
+                for detector in (detect_source, proxy_upgrade.detect_source):
+                    with self.subTest(detector=detector.__module__):
+                        findings = detector(ROOT, self.path, source)
+                        self.assertEqual(len(findings), 1, findings)
 
     def test_initializer_flag_for_loop_bool_before_guard_does_not_shadow(self):
         # A `bool` declared as a for-loop initializer is scoped to the loop,

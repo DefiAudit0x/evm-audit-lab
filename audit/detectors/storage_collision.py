@@ -225,6 +225,44 @@ def _contract_scope_code(body: str) -> str:
     return "".join(chars)
 
 
+def _leaf_count(kind) -> int:
+    """Leaves a resolved type would expand to, without materializing them.
+
+    Scalars expand to one leaf; structs sum their members; a fixed array
+    multiplies its element count; a dynamic array is one descriptor leaf.
+    """
+    if isinstance(kind, tuple):
+        if kind and kind[0] == "array":
+            _, element, length = kind
+            return int(length) * _leaf_count(element) if length else 1
+        return sum(_leaf_count(member) for member in kind)
+    return 1
+
+
+def _slot_span(kind) -> int:
+    """Upper bound on the slots one value of a resolved type occupies.
+
+    Scalars take one slot; structs sum their members; a fixed array
+    multiplies its element span; a dynamic array takes one slot. The bound
+    over-estimates when small-type elements pack (e.g. `uint128[4]` is
+    2 slots, not 4); comparisons are relative between two layouts, so the
+    over-estimate cannot mask a change.
+    """
+    if isinstance(kind, tuple):
+        if kind and kind[0] == "array":
+            _, element, length = kind
+            return int(length) * _slot_span(element) if length else 1
+        return sum(_slot_span(member) for member in kind)
+    return 1
+
+
+# Total leaf entries array expansion may materialize per layout. The check
+# is cumulative across recursive calls: a per-dimension cap alone does not
+# bound nested arrays (`uint256[1024][1024][1024]` would materialize 2^30
+# leaves even though no dimension exceeds 1024).
+EXPANSION_BUDGET = 4096
+
+
 def _resolved_storage_layout(contract, by_name):
     """Flatten struct members into name-independent types, slots and offsets."""
     structs = {}
@@ -254,12 +292,16 @@ def _resolved_storage_layout(contract, by_name):
             return kind + "256"
         return kind
 
-    def flatten(types, start=0, prefix=()):
+    def flatten(types, start=0, prefix=(), budget=None):
         # Each leaf entry carries its aggregate boundary path: a tuple of
         # indices from the top-level field down to the leaf (array elements
         # get their element index). Two layouts that flatten to the same
         # (kind, slot, offset) sequence still differ when a field moved
         # because an array resized — the path records where it came from.
+        # `budget` is the remaining leaf-entry budget for array expansion
+        # in this layout, shared by reference across recursive calls.
+        if budget is None:
+            budget = [EXPANSION_BUDGET]
         layout = []
         slot, offset = start, 0
         for index, kind in enumerate(types):
@@ -271,8 +313,10 @@ def _resolved_storage_layout(contract, by_name):
                     _, element, length = kind
                     if length:
                         count = int(length)
-                        if count <= 1024:
-                            members, end = flatten([element] * count, slot, path)
+                        total = count * _leaf_count(element)
+                        if count <= 1024 and total <= budget[0]:
+                            budget[0] -= total
+                            members, end = flatten([element] * count, slot, path, budget)
                         else:
                             # Do not materialize huge fixed arrays: one
                             # descriptor entry, advancing the cursor by the
@@ -282,12 +326,11 @@ def _resolved_storage_layout(contract, by_name):
                             # boundaries (e.g. uint128[4] occupies 2 slots).
                             # Comparisons are relative between two layouts,
                             # so the over-estimate cannot mask a change.
-                            _, span = flatten([element], 0, path)
-                            members, end = [(kind, slot, 0, path)], slot + span * count
+                            members, end = [(kind, slot, 0, path)], slot + _slot_span(element) * count
                     else:
                         members, end = [(kind, slot, 0, path)], slot + 1
                 else:
-                    members, end = flatten(kind, slot, path)
+                    members, end = flatten(kind, slot, path, budget)
                 layout.extend(members)
                 slot = end
                 continue

@@ -9,8 +9,10 @@ from .finding import Finding
 from .solidity import (
     constructor_blocks,
     contract_blocks,
+    fallback_blocks,
     function_blocks,
     modifier_blocks,
+    receive_blocks,
     relative_path,
     solidity_files,
 )
@@ -26,13 +28,15 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
             "sequencer.latestRoundData" in code and "super._validatedPrice" in code
         )
         functions = list(function_blocks(contract))
-        # Oracle reads in modifiers and constructors are scannable units
-        # too, with the same per-body checks as functions; validation stays
-        # scoped to each body.
+        # Oracle reads in modifiers, constructors, fallback and receive
+        # bodies are scannable units too, with the same per-body checks as
+        # functions; validation stays scoped to each body.
         units = (
             functions
             + list(modifier_blocks(contract))
             + list(constructor_blocks(contract))
+            + list(fallback_blocks(contract))
+            + list(receive_blocks(contract))
         )
         for function in units:
             code = function.code_body

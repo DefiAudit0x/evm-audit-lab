@@ -61,16 +61,21 @@ def _tuple_bool_declarations(body: str) -> dict[str, list[tuple[int, int]]]:
     scopes = []
     brace_index = 0
     for match in TUPLE_BOOL_DECLARATION.finditer(body):
-        start = match.start(1)
-        while brace_index < len(braces) and braces[brace_index].start() < start:
-            brace = braces[brace_index]
-            if brace.group() == "{":
-                scopes.append(brace.start())
-            elif scopes:
-                scopes.pop()
-            brace_index += 1
-        end = scope_ends.get(scopes[-1], len(body)) if scopes else len(body)
-        declarations.setdefault(match.group(1), []).append((start, end))
+        # The pattern captures only one name — the last `bool` in the tuple,
+        # because the `[^()]*` prefix is greedy — so enumerate EVERY `bool`
+        # declared inside the matched tuple text, each with the same
+        # enclosing-block scope range from its own position.
+        for name_match in re.finditer(r"\bbool\s+([A-Za-z_]\w*)\b", match.group(0)):
+            start = match.start() + name_match.start(1)
+            while brace_index < len(braces) and braces[brace_index].start() < start:
+                brace = braces[brace_index]
+                if brace.group() == "{":
+                    scopes.append(brace.start())
+                elif scopes:
+                    scopes.pop()
+                brace_index += 1
+            end = scope_ends.get(scopes[-1], len(body)) if scopes else len(body)
+            declarations.setdefault(name_match.group(1), []).append((start, end))
     return declarations
 
 
