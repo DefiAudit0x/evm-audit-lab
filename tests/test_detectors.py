@@ -359,6 +359,11 @@ class DetectorTests(unittest.TestCase):
             # A parenthesised conjunction wrapped in `== false` requires
             # the conjunction to be FALSE.
             'require((minted > 0 && assets > 0) == false);',
+            # The same wrapper on a conjunction with a plain second part.
+            'require((minted > 0 && enabled) == false);',
+            # A ternary selector inside a parenthesised conjunct can hold
+            # while the mint is zero, even with a positive sibling conjunct.
+            'require((minted > 0 && enabled ? false : true) && assets > 0);',
             # A top-level ternary can hold while the mint is zero (the
             # ternary yields `true`), so it enforces nothing.
             'require(minted > 0 && enabled ? false : true);',
@@ -476,7 +481,10 @@ class DetectorTests(unittest.TestCase):
 
     def test_precision_flags_guarded_copy_with_guard_after_copy(self):
         # A guard AFTER the copy cannot prove the copied value was
-        # positive at the copy point.
+        # positive at the copy point. The bootstrap arm sets `assets = 1`
+        # after the copy, so a zero copy can reach the share update and the
+        # test genuinely checks that a late guard does not validate an
+        # earlier value.
         source = """
         contract SyntheticPool {
             uint256 totalShares;
@@ -485,6 +493,7 @@ class DetectorTests(unittest.TestCase):
                 uint256 minted;
                 if (totalShares == 0) {
                     minted = assets;
+                    assets = 1;
                 } else {
                     minted = assets * totalShares / totalAssets;
                     require(minted > 0);
@@ -497,6 +506,100 @@ class DetectorTests(unittest.TestCase):
         findings = precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
+
+    def test_precision_flags_guarded_copy_with_prefix_write_before_copy(self):
+        # A write placed BEFORE the copied name — `delete assets;`,
+        # `--assets;` or `++assets;` — zeroes or changes it just like a
+        # plain assignment, so the guard no longer credits the copy.
+        for write in (
+            "delete assets;",
+            "--assets;",
+            "++assets;",
+        ):
+            with self.subTest(write=write):
+                source = f"""
+                contract SyntheticPool {{
+                    uint256 totalShares;
+                    uint256 totalAssets;
+                    function deposit(uint256 assets) external {{
+                        require(assets > 0);
+                        uint256 minted;
+                        {write}
+                        if (totalShares == 0) {{
+                            minted = assets;
+                        }} else {{
+                            minted = assets * totalShares / totalAssets;
+                            require(minted > 0);
+                        }}
+                        totalShares += minted;
+                    }}
+                }}
+                """
+                findings = precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
+
+    def test_precision_flags_if_else_proof_invalidated_by_write_after_join(self):
+        # The two-arm proof holds only at the share update: a write to
+        # `minted` or `shares` after the if/else join means the mint
+        # reaching the update can be zero, even though both arms proved
+        # a positive mint on their own path.
+        for write in (
+            "minted = 0;",
+            "shares = 0;",
+        ):
+            with self.subTest(write=write):
+                source = f"""
+                contract SyntheticPool {{
+                    uint256 totalShares;
+                    uint256 totalAssets;
+                    function deposit(uint256 assets) external {{
+                        require(assets > 0);
+                        uint256 minted;
+                        if (totalShares == 0) {{
+                            minted = assets;
+                        }} else {{
+                            minted = assets * totalShares / totalAssets;
+                            require(minted > 0);
+                        }}
+                        {write}
+                        totalShares += minted;
+                    }}
+                }}
+                """
+                findings = precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
+
+    def test_precision_flags_guarded_convert_to_shares_with_unguarded_deposit(self):
+        # A positive-share guard in `convertToShares` says nothing about a
+        # `deposit` that never calls it: each function body is checked
+        # against its own mint path. A deposit with its own guard passes.
+        for deposit_guard, expected in (
+            ("", 1),
+            ("require(minted > 0);", 0),
+        ):
+            with self.subTest(deposit_guard=deposit_guard or "none"):
+                source = f"""
+                contract SyntheticPool {{
+                    uint256 totalShares;
+                    uint256 totalAssets;
+                    function convertToShares(uint256 assets) public view returns (uint256 shares) {{
+                        shares = assets * totalShares / totalAssets;
+                        require(shares > 0);
+                        return shares;
+                    }}
+                    function deposit(uint256 assets) external {{
+                        uint256 minted = assets * totalShares / totalAssets;
+                        {deposit_guard}
+                        totalShares += minted;
+                    }}
+                }}
+                """
+                findings = precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
+                self.assertEqual(len(findings), expected)
+                if expected:
+                    self.assertEqual(findings[0].title, "Share deposit may accept a zero-rounded mint")
 
     def test_precision_accepts_enforcing_positive_share_guard(self):
         for guard in (
@@ -515,8 +618,14 @@ class DetectorTests(unittest.TestCase):
             'require((minted > 0) == true);',
             # A parenthesised conjunction enforces each of its parts.
             'require((minted > 0 && assets > 0));',
+            # A parenthesised conjunction with an `== false` part still
+            # enforces through its positive-mint part.
+            'require((minted > 0 && enabled == false));',
             # A ternary nested in parens does not select the mint check.
             'require((a ? b : c) && minted > 0);',
+            # A ternary inside an array subscript selects an index, not
+            # the guard outcome, so the mint check still enforces.
+            'require(allowed[enabled ? 1 : 0] && minted > 0);',
             # A plain conjunction enforces each of its parts.
             'require(minted > 0 && enabled);',
         ):
@@ -728,6 +837,22 @@ class DetectorTests(unittest.TestCase):
         """
         self.assertEqual(proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source), [])
 
+    def test_proxy_upgrade_accepts_guard_immediately_after_probe(self):
+        # A guard starting immediately after the probe — no space between
+        # the probe's `;` and the `require` — still runs after the probe
+        # and counts.
+        source = """
+        contract Vault {
+            function upgradeToAndCall(address candidate, bytes calldata data) external {
+                require(candidate.code.length > 0);
+                (bool compatible, bytes memory uuid) = candidate.staticcall(abi.encodeCall(this.proxiableUUID, ()));require(compatible);
+                require(abi.decode(uuid, (bytes32)) == IMPLEMENTATION_SLOT);
+                require(address(this) != SELF);
+            }
+        }
+        """
+        self.assertEqual(proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source), [])
+
     def test_proxy_upgrade_flags_probe_output_reassigned_before_guards(self):
         # A probe output reassigned between the probe and the guards makes
         # the guards validate the replacement value, not the probe result.
@@ -900,27 +1025,42 @@ class DetectorTests(unittest.TestCase):
 
     def test_proxy_upgrade_flags_guards_before_probe(self):
         # Guards placed BEFORE the probe checked the state variables of
-        # the same names, not the probe outputs — they do not count. The
-        # same guards after the probe do.
-        for guards_before_probe, expected in ((True, 1), (False, 0)):
-            with self.subTest(guards_before_probe=guards_before_probe):
-                before = """
+        # the same names, not the probe outputs — they do not count. Each
+        # guard is moved independently: either one alone before the probe
+        # still leaves the compatibility check missing. The same guards
+        # after the probe do.
+        success_guard = """
                         require(compatible);
+        """
+        decode_guard = """
                         require(abi.decode(uuid, (bytes32)) == IMPLEMENTATION_SLOT);
-                """ if guards_before_probe else ""
-                after = """
-                        require(compatible);
-                        require(abi.decode(uuid, (bytes32)) == IMPLEMENTATION_SLOT);
-                """ if not guards_before_probe else ""
+        """
+        for before, expected in (
+            ("both", 1),
+            ("success", 1),
+            ("decode", 1),
+            ("none", 0),
+        ):
+            with self.subTest(before=before):
+                before_guards = ""
+                if before in ("both", "success"):
+                    before_guards += success_guard
+                if before in ("both", "decode"):
+                    before_guards += decode_guard
+                after_guards = ""
+                if before not in ("both", "success"):
+                    after_guards += success_guard
+                if before not in ("both", "decode"):
+                    after_guards += decode_guard
                 source = f"""
                 contract Vault {{
                     bool compatible;
                     bytes uuid;
                     function upgradeToAndCall(address candidate, bytes calldata data) external {{
                         require(candidate.code.length > 0);
-                        {before}
+                        {before_guards}
                         (bool compatible, bytes memory uuid) = candidate.staticcall(abi.encodeCall(this.proxiableUUID, ()));
-                        {after}
+                        {after_guards}
                         require(address(this) != SELF);
                     }}
                 }}

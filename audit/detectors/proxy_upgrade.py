@@ -142,13 +142,13 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                 # before the probe checked the state variables of the same
                 # names, not the probe outputs.
                 success_ok = any(
-                    offset > probe.end()
+                    offset >= probe.end()
                     and condition_enforces(condition, success_pattern)
                     and not _assigned_between(body, probe.end(), offset, success_name)
                     for condition, offset in guard_pairs
                 )
                 decode_ok = any(
-                    offset > probe.end()
+                    offset >= probe.end()
                     and condition_enforces(condition, decode_pattern)
                     and not _assigned_between(body, probe.end(), offset, uuid_name)
                     for condition, offset in guard_pairs

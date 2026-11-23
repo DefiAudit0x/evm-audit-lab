@@ -24,9 +24,11 @@ POSITIVE_SHARE = re.compile(r"\b(?:minted|shares)\s*>\s*0")
 
 
 def _top_level_if_else_branches(code: str):
-    """Yield (then_body, else_body_or_None, then_start, else_start_or_None)
-    for top-level `if` statements, with each arm body's absolute start
-    offset in `code`.
+    """Yield (then_body, else_body_or_None, then_start, else_start_or_None,
+    stmt_end) for top-level `if` statements, with each arm body's absolute
+    start offset in `code` and `stmt_end` the offset just past the whole
+    if/else statement (past the else arm when one exists, else past the
+    then arm).
 
     Only braced branches are analyzed; an `else if` chain yields
     else_body None (not analyzed — conservative).
@@ -65,6 +67,7 @@ def _top_level_if_else_branches(code: str):
                 cursor += 1
             else_body = None
             else_start = None
+            stmt_end = then_end + 1
             if re.match(r"else\b", code[cursor:]):
                 after_else = cursor + 4
                 while after_else < len(code) and code[after_else] in " \t\n":
@@ -74,7 +77,8 @@ def _top_level_if_else_branches(code: str):
                     if else_end is not None:
                         else_body = code[after_else + 1 : else_end]
                         else_start = after_else + 1
-            yield then_body, else_body, then_start, else_start
+                        stmt_end = else_end + 1
+            yield then_body, else_body, then_start, else_start, stmt_end
         char = token.group()
         if char == "{":
             braces += 1
@@ -115,17 +119,26 @@ def _top_level_statements(code: str):
         yield tail, start
 
 
-def _written_between(code: str, start: int, end: int, name: str) -> bool:
+def _written_between(code: str, start: int, end: int, name: str, *, include_indexed: bool = True) -> bool:
     """True if `name` is written in code[start:end]: a plain or compound
-    assignment, `++`/`--`, a tuple-assignment LHS element, or an indexed
-    write `name[...] = ...`. A `==` comparison is not a write, and a name
-    in a call or a return is not either."""
+    assignment, `++`/`--` (prefix or postfix), `delete`, a tuple-assignment
+    LHS element, or an indexed write `name[...] = ...`. A `==` comparison
+    is not a write, and a name in a call or a return is not either.
+
+    With include_indexed=False, writes to a mapping slot `name[...]`
+    are ignored: they change a balance entry, not the scalar mint value
+    itself (e.g. the `shares[msg.sender] += minted` credit after a
+    deposit's if/else must not invalidate the two-arm mint proof)."""
     window = code[start:end]
     escaped = re.escape(name)
     if re.search(rf"\b{escaped}\s*(?:=(?!=)|[+\-*/%&|^]=|<<=|>>=|\+\+|--)", window):
         return True
+    if re.search(rf"(?:\bdelete\s+|\+\+|--)\s*{escaped}\b", window):
+        return True
     if re.search(rf"\([^()]*\b{escaped}\b[^()]*\)\s*=(?!=)", window):
         return True
+    if not include_indexed:
+        return False
     return re.search(
         rf"\b{escaped}\s*(?:\[[^\]]*\])+\s*(?:=(?!=)|[+\-*/%&|^]=|<<=|>>=)",
         window,
@@ -171,6 +184,48 @@ def _branch_covers_mint(
     return False
 
 
+def _body_has_zero_mint_guard(body: str) -> bool:
+    """True if one function body enforces a positive mint on its own path:
+    a top-level positive-share guard, an exhaustive if/else whose arms both
+    guarantee a positive mint, or an `if (minted == 0) revert` check.
+
+    Guards are checked per body: a guard in `convertToShares` says nothing
+    about a `deposit` that never calls it. The two-arm proof holds only at
+    the share update: a write to `minted`/`shares` after the if/else join
+    invalidates it (the top-level-guard path stays position-insensitive —
+    the recorded H1/H2 limitation). An indexed write such as
+    `shares[msg.sender] += minted` does not invalidate it: it credits a
+    balance with the mint, it does not replace the mint value.
+    """
+    top_guard_pairs = top_level_guard_conditions(body)
+    if any(
+        condition_enforces(condition, POSITIVE_SHARE)
+        for condition, _ in top_guard_pairs
+    ):
+        return True
+    # An `if/else` is exhaustive: it guards the mint only if BOTH branches
+    # guarantee a positive mint on their own path (an enforcing require, or
+    # an assignment from a value with a top-level positive require). A bare
+    # `if` never counts.
+    for then_body, else_body, then_start, else_start, stmt_end in _top_level_if_else_branches(body):
+        if else_body is None:
+            continue
+        if not (
+            _branch_covers_mint(then_body, top_guard_pairs, then_start, body)
+            and _branch_covers_mint(else_body, top_guard_pairs, else_start, body)
+        ):
+            continue
+        if _written_between(body, stmt_end, len(body), "minted", include_indexed=False):
+            continue
+        if _written_between(body, stmt_end, len(body), "shares", include_indexed=False):
+            continue
+        return True
+    return bool(re.search(
+        r"\bif\s*\(\s*(?:minted|shares)\s*==\s*0\s*\)\s*\{?\s*revert\b",
+        body,
+    ))
+
+
 def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
     findings = []
     for contract in contract_blocks(source_path, source):
@@ -184,29 +239,16 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
             # A guard inside `if (...) { ... }` is skipped when the branch
             # is not taken, so it enforces nothing. A parenthesized guard
             # `(minted > 0)` at the top level still counts.
-            top_guard_pairs = top_level_guard_conditions(deposit_code)
-            top_conditions = [
-                condition for condition, _ in top_guard_pairs
-            ]
-            zero_guard = any(
-                condition_enforces(condition, POSITIVE_SHARE)
-                for condition in top_conditions
+            # The check runs per function body: a guard in `convertToShares`
+            # says nothing about a `deposit` that never calls it. The
+            # finding stands if ANY body assigning `minted`/`shares` lacks
+            # its own guard (at most one finding per contract).
+            zero_guard = all(
+                _body_has_zero_mint_guard(f.code_body)
+                for f in funcs
+                if f.name in {"deposit", "convertToShares"}
+                and re.search(r"\b(?:minted|shares)\s*=", f.code_body)
             )
-            if not zero_guard:
-                # An `if/else` is exhaustive: it guards the mint only if
-                # BOTH branches guarantee a positive mint on their own path
-                # (an enforcing require, or an assignment from a value with
-                # a top-level positive require). A bare `if` never counts.
-                zero_guard = any(
-                    else_body is not None
-                    and _branch_covers_mint(then_body, top_guard_pairs, then_start, deposit_code)
-                    and _branch_covers_mint(else_body, top_guard_pairs, else_start, deposit_code)
-                    for then_body, else_body, then_start, else_start in _top_level_if_else_branches(deposit_code)
-                )
-            zero_guard = zero_guard or bool(re.search(
-                r"\bif\s*\(\s*(?:minted|shares)\s*==\s*0\s*\)\s*\{?\s*revert\b",
-                deposit_code,
-            ))
             seeded = bool(re.search(r"DEAD_SHARES|_VIRTUAL_SHARES", code))
             if re.search(r"\b(?:minted|shares)\s*=", deposit_code) and not zero_guard:
                 findings.append(

@@ -389,7 +389,12 @@ def _bool_wrapper(text: str) -> tuple[str, str, str] | None:
 def _conjunct_enforces(conjunct: str, wanted: re.Pattern[str]) -> bool:
     """True if one top-level `&&` conjunct enforces `wanted` as a complete
     comparison. A conjunct starting with `!` never counts, and a conjunct
-    that is itself a disjunction does not count. A trailing `==`/`!=`
+    that is itself a disjunction does not count. A ternary selector inside
+    the conjunct means it can hold while `wanted` is false, so it does not
+    count either (a sibling conjunct split off by `&&` still can). A
+    parenthesised conjunction is split first and each part re-checked, so
+    `minted > 0` inside `(minted > 0 && enabled == false)` counts. A
+    trailing `==`/`!=`
     against a boolean literal wraps the comparison: `== true` / `!= false`
     preserve it (recurse on the LHS) while `== false` / `!= true` invert
     it (reject the conjunct).
@@ -399,32 +404,40 @@ def _conjunct_enforces(conjunct: str, wanted: re.Pattern[str]) -> bool:
         return False
     if len(split_top_level(stripped, "||")) != 1:
         return False
+    if _has_top_level_ternary(stripped):
+        return False
+    parts = split_top_level(stripped, "&&")
+    if len(parts) > 1:
+        # A parenthesised conjunction enforces each of its parts; any one
+        # of them enforcing `wanted` is enough (the wrapper check below
+        # rejects a `== false` / `!= true` wrapper on a part).
+        return any(_conjunct_enforces(part, wanted) for part in parts)
     wrapper = _bool_wrapper(stripped)
     if wrapper is not None:
         lhs, operator, rhs = wrapper
         if (operator == "==" and rhs == "true") or (operator == "!=" and rhs == "false"):
             return _conjunct_enforces(lhs, wanted)
         return False
-    parts = split_top_level(stripped, "&&")
-    if len(parts) > 1:
-        # A parenthesized conjunction strips to several comparisons; any
-        # one of them enforcing `wanted` is enough (the wrapper check
-        # above already rejected a `== false` / `!= true` wrapper).
-        return any(_conjunct_enforces(part, wanted) for part in parts)
     return wanted.fullmatch(stripped) is not None
 
 
 def _has_top_level_ternary(text: str) -> bool:
     """True if `text` contains a `?` at paren depth 0 — a ternary selector
     at the top level means the condition can hold without enforcing any
-    single conjunct. A `?` nested in parens is fine."""
-    depth = 0
+    single conjunct. A `?` nested in parens is fine, and so is one inside
+    square brackets (an array subscript such as `allowed[enabled ? 1 : 0]`
+    selects an index, not the guard outcome)."""
+    paren_depth = bracket_depth = 0
     for char in text:
         if char == "(":
-            depth += 1
+            paren_depth += 1
         elif char == ")":
-            depth -= 1
-        elif char == "?" and depth == 0:
+            paren_depth -= 1
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth -= 1
+        elif char == "?" and paren_depth == 0 and bracket_depth == 0:
             return True
     return False
 
