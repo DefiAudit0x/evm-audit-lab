@@ -135,7 +135,7 @@ class SlitherGateTests(unittest.TestCase):
             ("divide-before-multiply", "Medium", "src/SafeLending.sol", (65, 74)),
             ("unused-return", "Medium", "src/SafeLending.sol", (108, 123)),
             ("incorrect-equality", "Medium", "src/SafeSwap.sol", (57, 75)),
-            ("controlled-delegatecall", "High", "src/SafeUupsVault.sol", (52, 71)),
+            ("controlled-delegatecall", "High", "src/SafeUupsVault.sol", (56, 75)),
             ("incorrect-equality", "Medium", "src/SafeVault4626.sol", (49, 64)),
             ("reentrancy-balance", "High", "src/SafeVault4626.sol", (66, 84)),
             ("reentrancy-balance", "High", "src/SafeFotVault.sol", (36, 45)),

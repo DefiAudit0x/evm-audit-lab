@@ -101,7 +101,7 @@ Each acceptance below is owned by DefiAudit0x and expires on 2027-05-21.
 <a id="accepted-8"></a>
 ### Entry 8: `src/SafeUupsVault.sol` / `controlled-delegatecall`
 
-**Location:** 52-71
+**Location:** 56-75
 
 **Verdict:** ACCEPT (High). The delegatecall is the defined UUPS upgrade-and-call behavior. The operation requires `onlyProxy`, `onlyOwner`, and a target that passes the proxiable UUID compatibility check; the residual risk is the documented trust in the owner. **Evidence:** unauthorized-upgrade tests in `test/UupsTakeover.t.sol` and the guards in `src/SafeUupsVault.sol`.
 

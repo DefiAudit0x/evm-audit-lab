@@ -181,7 +181,7 @@ ACCEPTED: dict[tuple[str, str, str], AcceptedFinding] = {
     (
         "src/SafeUupsVault.sol",
         "controlled-delegatecall",
-        "52-71",
+        "56-75",
     ): AcceptedFinding(
         reason="UUPS upgrade calls require proxy context, owner authorization, and UUID compatibility; see docs/slither-triage.md#accepted-8",
         owner="DefiAudit0x",

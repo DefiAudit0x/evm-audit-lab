@@ -18,6 +18,16 @@ Run every check in this table before opening a pull request. The commands are
 copied verbatim from `.github/workflows/test.yml` and
 `.github/workflows/slither.yml`; run them in the same order the workflows do.
 
+Several commands expand variables the workflows set for their own jobs.
+Initialize them first, in the same shell, before running the table:
+
+```bash
+report_dir="$(mktemp -d)"
+AUDIT_TEST_SEED="0x13"
+source_revision="$(git rev-parse HEAD)"
+source_dirty="$(test -n "$(git status --porcelain)" && echo true || echo false)"
+```
+
 | Check | Command | What it covers |
 | --- | --- | --- |
 | Foundry tests (root) | `forge test -vv` | All root Foundry suites |
@@ -33,11 +43,11 @@ copied verbatim from `.github/workflows/test.yml` and
 | Research reports | `python3 -B .github/scripts/audit_report.py "$report_dir/slither.json" --build-dir out --test-results "$report_dir/foundry.json" --test-seed "$AUDIT_TEST_SEED" --source-revision "$source_revision" --source-dirty "$source_dirty" --format all --output-dir "$report_dir"` | Research reports built from the Slither and Foundry results |
 | Slither gate | `python3 -B .github/scripts/check_slither.py "$report_dir/slither.json"` | Gate: lab detections present, `Safe*` contracts clean or triaged |
 
-In the Slither workflow, `$report_dir` is a fresh temporary directory
-(`mktemp -d`), `$AUDIT_TEST_SEED` is `0x13`, `$source_revision` is the current
-commit, and `$source_dirty` records whether the checkout has uncommitted
-changes. Locally, substitute any report path for `$report_dir/slither.json`,
-for example `docs/slither-rescan-2026-11-24.json`.
+The setup block above mirrors the Slither workflow: `$report_dir` is a fresh
+temporary directory (`mktemp -d`), `$AUDIT_TEST_SEED` is `0x13`,
+`$source_revision` is the current commit, and `$source_dirty` records whether
+the checkout has uncommitted changes. Locally, substitute any report path for
+`$report_dir/slither.json`, for example `docs/slither-rescan-2026-11-24.json`.
 
 ## New detector template
 

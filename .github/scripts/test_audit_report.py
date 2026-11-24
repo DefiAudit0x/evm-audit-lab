@@ -77,7 +77,7 @@ EXPECTED_DEFAULT_ALLOWLIST = [{'anchor': 'accepted-1',
  {'anchor': 'accepted-8',
   'check': 'controlled-delegatecall',
   'expires': '2027-05-21',
-  'lines': '52-71',
+  'lines': '56-75',
   'owner': 'DefiAudit0x',
   'path': 'src/SafeUupsVault.sol',
   'reason': 'UUPS upgrade calls require proxy context, owner authorization, and UUID '
@@ -271,6 +271,36 @@ class AuditTests(unittest.TestCase):
         # The revision comes from the exporter's own checkout, but the
         # build/test inputs are still caller-supplied paths.
         self.assertEqual(research["inputs_provenance"], "caller-supplied, unverified")
+
+    def test_provided_revision_without_dirty_is_provided_unverified(self):
+        # Fix 135: the origin follows the supplied revision alone. When
+        # only the revision is provided, the exporter never read it from
+        # its checkout, so the report must not claim exporter-checkout.
+        # The shared mock's checkout status is non-empty here (the
+        # "checkout-rev" side-effect value is consumed by the status call
+        # once the revision lookup is skipped), so the omitted dirty flag
+        # is collected from the checkout as True; the origin label must
+        # not depend on that.
+        research = self.research("artifact-revision")
+        self.assertEqual(research["source_revision"], "artifact-revision")
+        self.assertIs(research["source_dirty"], True)
+        self.assertEqual(research["source_revision_origin"], "provided-unverified")
+
+    def test_neither_revision_nor_dirty_uses_exporter_checkout(self):
+        # Fix 135: with neither value supplied, the revision comes from
+        # the exporter's own checkout.
+        research = self.research()
+        self.assertEqual(research["source_revision"], "checkout-rev")
+        self.assertIs(research["source_dirty"], False)
+        self.assertEqual(research["source_revision_origin"], "exporter-checkout")
+
+    def test_provided_revision_and_dirty_is_provided_unverified(self):
+        # Fix 135: with both values supplied, the origin is the provided
+        # revision, not the exporter checkout.
+        research = self.research("artifact-revision", True)
+        self.assertEqual(research["source_revision"], "artifact-revision")
+        self.assertIs(research["source_dirty"], True)
+        self.assertEqual(research["source_revision_origin"], "provided-unverified")
 
     def test_unrelated_inputs_carry_unverified_provenance(self):
         # m-23: a scratch export with unrelated build/test inputs labelled

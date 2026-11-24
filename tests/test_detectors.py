@@ -1584,6 +1584,9 @@ class DetectorMinorTests(unittest.TestCase):
         contract UnrelatedToken {
             uint256 totalSupply;
         }
+        contract SimpleToken {
+            uint256 totalSupply;
+        }
         """
         findings = detect_storage_collision_source(ROOT, self.path, unrelated)
         self.assertEqual(
@@ -1591,10 +1594,16 @@ class DetectorMinorTests(unittest.TestCase):
             [
                 ("Proxy slot 0 overlaps implementation storage", "high"),
                 ("Proxy slot 0 may overlap unverified implementation storage", "medium"),
+                ("Proxy slot 0 may overlap unverified implementation storage", "medium"),
             ],
         )
         self.assertIn("unverified", findings[1].message)
         self.assertIn("UnrelatedToken", findings[1].message)
+        # Fix 136: `SimpleToken` contains the substring "impl" (s-impl-e)
+        # but no whole name component marks it as an implementation, so it
+        # is an unverified candidate too, not a high-confidence collision.
+        self.assertIn("unverified", findings[2].message)
+        self.assertIn("SimpleToken", findings[2].message)
         # A proxy that references its implementation by name is related,
         # so its pairing keeps high confidence.
         referenced = """

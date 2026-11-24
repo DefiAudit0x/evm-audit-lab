@@ -519,7 +519,7 @@ def collect_research(
         "compiler_settings": compilers,
         "source_revision": source_revision if source_revision is not None else command("git", "rev-parse", "HEAD"),
         "source_dirty": source_dirty if source_dirty is not None else bool(command("git", "status", "--porcelain")),
-        "source_revision_origin": "provided-unverified" if source_revision is not None and source_dirty is not None else "exporter-checkout",
+        "source_revision_origin": "provided-unverified" if source_revision is not None else "exporter-checkout",
         "inputs_provenance": "caller-supplied, unverified",
         "test_seeds": {"foundry_fuzz_seed": seed},
         "minimal_counterexamples": counterexamples,
