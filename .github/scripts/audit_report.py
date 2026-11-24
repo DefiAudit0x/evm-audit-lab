@@ -8,6 +8,7 @@ import html
 import json
 import math
 import os
+from datetime import date
 from pathlib import Path, PurePosixPath
 import posixpath
 import re
@@ -54,6 +55,32 @@ def rule_id(value):
         isinstance(value, str) and RULE.fullmatch(value) is not None,
         "check: expected a detector identifier",
     )
+    return value
+
+
+LINE_RANGE = re.compile(r"[1-9][0-9]*-[1-9][0-9]*")
+
+
+def line_range(value):
+    require(
+        isinstance(value, str) and LINE_RANGE.fullmatch(value) is not None,
+        "lines: expected a start-end line range",
+    )
+    start, end = (int(part) for part in value.split("-"))
+    require(end >= start, "lines: end must not precede start")
+    return value
+
+
+def expiry_date(value):
+    require(
+        isinstance(value, str)
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) is not None,
+        "expires: expected a YYYY-MM-DD date",
+    )
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise AuditError(f"expires: invalid date {value!r}") from exc
     return value
 
 
@@ -143,8 +170,16 @@ def load_policy(path, root):
             p: list(checks) for p, checks in FORBIDDEN_ON_SAFE.items()
         },
         "allowed_on_safe": [
-            {"path": p, "check": c, "reason": reason}
-            for (p, c), reason in ACCEPTED.items()
+            {
+                "path": p,
+                "check": c,
+                "lines": lines,
+                "reason": entry.reason,
+                "owner": entry.owner,
+                "expires": entry.expires.isoformat(),
+                "anchor": entry.anchor,
+            }
+            for (p, c, lines), entry in ACCEPTED.items()
         ],
     }
     if path is not None:
@@ -162,13 +197,13 @@ def load_policy(path, root):
         "configuration.schema_version must be 1",
     )
 
-    def entries(value, with_reason, label):
+    def entries(value, kind, label):
         require(isinstance(value, list), f"{label}: expected array")
         seen, result = set(), []
         fields = (
-            {"path", "check", "reason"}
-            if with_reason
-            else {"path", "check"}
+            {"path", "check"}
+            if kind == "required"
+            else {"path", "check", "lines", "reason", "owner", "expires", "anchor"}
         )
         for item in value:
             object_fields(item, fields, fields, label)
@@ -176,10 +211,14 @@ def load_policy(path, root):
                 "path": source_path(item["path"], root),
                 "check": rule_id(item["check"]),
             }
-            pair = (entry["path"], entry["check"])
+            if kind == "allowed":
+                entry["lines"] = line_range(item["lines"])
+                pair = (entry["path"], entry["check"], entry["lines"])
+            else:
+                pair = (entry["path"], entry["check"])
             require(pair not in seen, f"{label}: duplicate {pair}")
             seen.add(pair)
-            if with_reason:
+            if kind == "allowed":
                 require(
                     PurePosixPath(entry["path"]).name.startswith("Safe"),
                     "allowed_on_safe paths must name Safe* files",
@@ -187,20 +226,31 @@ def load_policy(path, root):
                 entry["reason"] = nonempty(
                     item["reason"], "allowlist reason"
                 ).strip()
+                entry["owner"] = nonempty(
+                    item["owner"], "allowlist owner"
+                ).strip()
+                entry["expires"] = expiry_date(item["expires"])
+                entry["anchor"] = nonempty(
+                    item["anchor"], "allowlist anchor"
+                ).strip()
             result.append(entry)
         return sorted(
             result,
-            key=lambda item: (item["path"], item["check"]),
+            key=lambda item: (
+                item["path"],
+                item["check"],
+                item.get("lines", ""),
+            ),
         )
 
     policy["required_detections"] = entries(
         policy["required_detections"],
-        False,
+        "required",
         "required_detections",
     )
     policy["allowed_on_safe"] = entries(
         policy["allowed_on_safe"],
-        True,
+        "allowed",
         "allowed_on_safe",
     )
 
@@ -257,6 +307,14 @@ def location(path, root, lines=None):
                 end_line=max(lines),
             )
     return result
+
+
+def site_lines(item, path):
+    """Line range ("start-end") of item's first location in path, or None."""
+    for location in item["locations"]:
+        if location["path"] == path and "start_line" in location:
+            return f"{location['start_line']}-{location['end_line']}"
+    return None
 
 
 def parse_findings(raw, root):
@@ -500,7 +558,9 @@ def base_report():
     }
 
 
-def build_report(findings, policy, threshold="none"):
+def build_report(findings, policy, threshold="none", today=None):
+    if today is None:
+        today = date.today()
     report = base_report()
     report["configuration"] = policy
     report["findings"] = findings
@@ -522,7 +582,7 @@ def build_report(findings, policy, threshold="none"):
         for c in checks
     }
     allowed = {
-        (item["path"], item["check"]): item["reason"]
+        (item["path"], item["check"], item["lines"]): item
         for item in policy["allowed_on_safe"]
     }
 
@@ -585,19 +645,27 @@ def build_report(findings, policy, threshold="none"):
             pair = (path, item["check"])
             safe = PurePosixPath(path).name.startswith("Safe")
             disposition = "observation"
+            site = site_lines(item, path)
+            entry = allowed.get((path, item["check"], site)) if site else None
+            expired = (
+                entry is not None
+                and date.fromisoformat(entry["expires"]) < today
+            )
             if pair in forbidden:
                 disposition = "regression"
-            elif safe and pair in allowed:
+            elif safe and entry is not None and not expired:
                 disposition = "allowed"
                 if path == item["locations"][0]["path"]:
-                    item["justification"] = allowed[pair]
+                    item["justification"] = entry["reason"]
             elif safe and item["severity"] in ("high", "medium"):
                 disposition = "untriaged"
             elif pair in required:
                 disposition = "expected"
             dispositions.append(disposition)
             if safe and item["severity"] in ("high", "medium"):
-                triage[pair] = disposition == "allowed"
+                key = (path, item["check"], site)
+                if key not in triage:
+                    triage[key] = (disposition == "allowed", entry)
 
         item["disposition"] = next(
             (
@@ -616,20 +684,24 @@ def build_report(findings, policy, threshold="none"):
         ):
             report["summary"]["threshold_failures"] += 1
 
-    for (path, check), accepted in sorted(triage.items()):
+    for (path, check, site), (accepted, entry) in sorted(
+        triage.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or "")
+    ):
+        if accepted:
+            message = entry["reason"]
+        elif entry is not None:
+            message = (
+                f"exception {entry['anchor']} for {check} on {path} "
+                f"({site}) expired on {entry['expires']}"
+            )
+        else:
+            message = "High/Medium finding needs a written allowlist reason."
         gate(
             "safe-triage",
             path,
             check,
             accepted,
-            (
-                allowed[(path, check)]
-                if accepted
-                else (
-                    "High/Medium finding needs a written "
-                    "allowlist reason."
-                )
-            ),
+            message,
         )
 
     report["summary"]["findings"] = len(findings)

@@ -32,12 +32,13 @@ vault.withdraw(1 ETH)
        │                                              └─ vault.withdraw(1 ETH) again
        │                                                    │
        │                                                    ├─ require(balances[attacker] >= 1) ✅ (not yet debited!)
-       │                                                    └─ msg.sender.call{value: 1 ETH}()
+       │                                                    ├─ msg.sender.call{value: 1 ETH}()
+       │                                                    └─ balances[attacker] -= 1 ETH (1 → 0)
        │
-       └─ balances[attacker] = 0             (zeroed once, after both sends)
+       └─ balances[attacker] -= 1 ETH          (0 → uint256 max - 1 ETH + 1)
 ```
 
-Result: attacker drains 2 ETH from a 2 ETH vault with a single 1 ETH deposit.
+Result: attacker drains 2 ETH from a 2 ETH vault with a single 1 ETH deposit. Each call decrements credit after sending ETH. The outer debit underflows in an intentionally `unchecked` block, preserving the reentrancy demonstration under Solidity 0.8; a checked debit would revert the transaction. Ordinary partial withdrawals retain the unwithdrawn credit.
 
 ## Minimal reproduction
 

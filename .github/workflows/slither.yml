@@ -45,7 +45,8 @@ jobs:
           source_revision="$(git rev-parse HEAD)"
           source_dirty="$(test -n "$(git status --porcelain)" && echo true || echo false)"
           status=0
-          slither . --fail-none --json "$report_dir/slither.json" || status=$?
+          slither . --fail-none --json "$report_dir/slither.json" \
+            --json-types detectors,compilations || status=$?
           forge test --force --extra-output storageLayout --fuzz-seed "$AUDIT_TEST_SEED" --json \
             > "$report_dir/foundry.json" || status=$?
           python3 -B .github/scripts/audit_report.py "$report_dir/slither.json" \

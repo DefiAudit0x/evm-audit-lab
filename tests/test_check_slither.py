@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 from pathlib import Path
 import re
@@ -12,22 +14,51 @@ SCRIPT = Path(__file__).resolve().parents[1] / ".github/scripts/check_slither.py
 GATE = runpy.run_path(str(SCRIPT))
 
 
-def detector(check, impact, *paths):
+def detector(check, impact, *paths, lines=None):
+    if lines is None:
+        anchor = paths[0] + "#1"
+        elements = [
+            {"source_mapping": {"filename_relative": path}} for path in paths
+        ]
+    else:
+        start, end = lines
+        anchor = f"{paths[0]}#L{start}-L{end}"
+        elements = [
+            {
+                "source_mapping": {
+                    "filename_relative": paths[0],
+                    "lines": list(range(start, end + 1)),
+                }
+            }
+        ]
+        elements += [
+            {"source_mapping": {"filename_relative": path}}
+            for path in paths[1:]
+        ]
     return {
         "check": check,
         "impact": impact,
-        "first_markdown_element": paths[0] + "#1",
-        "elements": [
-            {"source_mapping": {"filename_relative": path}} for path in paths
-        ],
+        "first_markdown_element": anchor,
+        "elements": elements,
     }
 
 
-def report(*extras):
+def report(*extras, safe_sources=None):
     required = [
         detector(check, "High", path) for path, check in GATE["REQUIRED_DETECTIONS"]
     ]
-    return {"success": True, "error": None, "results": {"detectors": required + list(extras)}}
+    if safe_sources is None:
+        safe_sources = GATE["SAFE_COUNTERPARTS"]
+    source_units = {"src/VulnerableVault.sol": {}}
+    source_units.update({path: {} for path in safe_sources})
+    return {
+        "success": True,
+        "error": None,
+        "results": {
+            "detectors": required + list(extras),
+            "compilations": [{"compilation_units": {"test-unit": {"source_units": source_units}}}],
+        },
+    }
 
 
 class SlitherGateTests(unittest.TestCase):
@@ -63,27 +94,147 @@ class SlitherGateTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         record = (root / "docs/slither-triage.md").read_text()
         section = record.split("## Accepted findings (2026-11-21)", 1)[1]
-        headings = list(re.finditer(r"^### Entry \d+: `([^`]+)` / `([^`]+)`$", section, re.MULTILINE))
+        headings = list(re.finditer(r"^### Entry (\d+): `([^`]+)` / `([^`]+)`$", section, re.MULTILINE))
+        anchors = list(re.finditer(r'^<a id="accepted-(\d+)"></a>$', section, re.MULTILINE))
         entries = {}
+        numbers = {}
         for index, heading in enumerate(headings):
             end = headings[index + 1].start() if index + 1 < len(headings) else len(section)
-            entries[(heading.group(1), heading.group(2))] = section[heading.end():end]
+            body = section[heading.end():end]
+            location = re.search(r"(?m)^\*\*Location:\*\* (\d+-\d+)$", body)
+            self.assertIsNotNone(
+                location, f"Entry {heading.group(1)} has no Location"
+            )
+            key = (heading.group(2), heading.group(3), location.group(1))
+            entries[key] = body
+            numbers[key] = heading.group(1)
+            preceding = [a for a in anchors if a.start() < heading.start()]
+            self.assertTrue(preceding, f"Entry {heading.group(1)} has no anchor")
+            self.assertEqual(preceding[-1].group(1), heading.group(1))
 
-        self.assertEqual(len(GATE["ACCEPTED"]), 8)
-        self.assertEqual(len(entries), 8)
-        for finding in GATE["ACCEPTED"]:
-            with self.subTest(finding=finding):
-                self.assertIn(finding, entries)
-                subsection = entries[finding]
+        self.assertEqual(len(anchors), len(headings))
+        self.assertEqual(len(GATE["ACCEPTED"]), 11)
+        self.assertEqual(len(entries), 11)
+        for (path, check, lines), entry in GATE["ACCEPTED"].items():
+            with self.subTest(finding=(path, check, lines)):
+                self.assertIn((path, check, lines), entries)
+                subsection = entries[(path, check, lines)]
+                self.assertEqual(
+                    entry.anchor, "accepted-" + numbers[(path, check, lines)]
+                )
                 self.assertRegex(subsection, r"(?m)^\*\*Owner:\*\* .+")
                 expiry = re.search(r"(?m)^\*\*Expiry:\*\* (.+)$", subsection)
                 self.assertIsNotNone(expiry)
+                self.assertEqual(expiry.group(1), entry.expires.isoformat())
                 self.assertRegex(expiry.group(1), r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_all_accepted_sites_pass(self):
+        sites = [
+            ("incorrect-equality", "Medium", "src/SafeFotVault.sol", (36, 45)),
+            ("reentrancy-balance", "High", "src/SafeFotVault.sol", (47, 58)),
+            ("divide-before-multiply", "Medium", "src/SafeLending.sol", (65, 74)),
+            ("unused-return", "Medium", "src/SafeLending.sol", (108, 123)),
+            ("incorrect-equality", "Medium", "src/SafeSwap.sol", (57, 75)),
+            ("controlled-delegatecall", "High", "src/SafeUupsVault.sol", (52, 71)),
+            ("incorrect-equality", "Medium", "src/SafeVault4626.sol", (49, 64)),
+            ("reentrancy-balance", "High", "src/SafeVault4626.sol", (66, 84)),
+            ("reentrancy-balance", "High", "src/SafeFotVault.sol", (36, 45)),
+            ("reentrancy-balance", "High", "src/SafeVault4626.sol", (49, 64)),
+            ("unused-return", "Medium", "src/SafeLending.sol", (76, 90)),
+        ]
+        findings = [
+            detector(check, impact, path, lines=span)
+            for check, impact, path, span in sites
+        ]
+        self.assert_gate(report(*findings), 0, "RESULT: PASS")
+
+    def test_second_site_under_accepted_pair_fails(self):
+        # Fixture D: the accepted deposit site passes, but a second
+        # distinct line range under the same (file, check) pair must fail.
+        accepted = detector(
+            "reentrancy-balance", "High", "src/SafeFotVault.sol", lines=(36, 45)
+        )
+        self.assert_gate(report(accepted), 0, "RESULT: PASS")
+        second_site = detector(
+            "reentrancy-balance", "High", "src/SafeFotVault.sol", lines=(100, 110)
+        )
+        self.assert_gate(
+            report(accepted, second_site), 1, "UNTRIAGED [High]"
+        )
+
+    def test_expired_exception_fails(self):
+        from datetime import date
+
+        accepted = dict(GATE["ACCEPTED"])
+        key = ("src/SafeFotVault.sol", "reentrancy-balance", "36-45")
+        entry = accepted[key]
+        accepted[key] = GATE["AcceptedFinding"](
+            reason=entry.reason,
+            owner=entry.owner,
+            expires=date(2000, 1, 1),
+            anchor=entry.anchor,
+        )
+        body = report(
+            detector(
+                "reentrancy-balance", "High", "src/SafeFotVault.sol", lines=(36, 45)
+            )
+        )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            path.write_bytes(json.dumps(body).encode())
+            findings, _ = GATE["read_report"](str(path))
+        decisions = GATE["triage_findings"](findings, accepted=accepted)
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0][1], "expired")
+
+    def test_expired_exception_fails_end_to_end(self):
+        from datetime import date
+
+        accepted = dict(GATE["ACCEPTED"])
+        key = ("src/SafeFotVault.sol", "reentrancy-balance", "36-45")
+        entry = accepted[key]
+        accepted[key] = GATE["AcceptedFinding"](
+            reason=entry.reason,
+            owner=entry.owner,
+            expires=date(2000, 1, 1),
+            anchor=entry.anchor,
+        )
+        body = report(
+            detector(
+                "reentrancy-balance", "High", "src/SafeFotVault.sol", lines=(36, 45)
+            )
+        )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            path.write_bytes(json.dumps(body).encode())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = GATE["main"](
+                    ["check_slither.py", str(path)], accepted=accepted
+                )
+        self.assertEqual(status, 1)
+        self.assertIn("EXPIRED [High]", output.getvalue())
+        self.assertIn("expired on 2000-01-01", output.getvalue())
 
     def test_required_detection_is_still_required(self):
         body = report()
         body["results"]["detectors"].pop()
         self.assert_gate(body, 1, "no longer fires")
+
+    def test_all_positive_hits_without_safe_scan_evidence_fail(self):
+        body = report(safe_sources=[])
+        self.assert_gate(body, 1, "no scan evidence for safe counterpart")
+
+    def test_manual_only_proxy_collision_is_reported_as_skipped(self):
+        self.assertIn(
+            ("Lab 07", "src/SafeProxy.sol", "proxy-storage-collision", "not in Slither 0.11.6 detector catalog"),
+            GATE["SKIPPED_CHECKS"],
+        )
+        self.assert_gate(report(), 0, "SKIP Lab 07 proxy-storage-collision")
+
+    def test_low_unchecked_transfer_on_safe_amm_fails(self):
+        finding = detector("unchecked-transfer", "Low", "src/SafeAmm.sol")
+        self.assert_gate(report(finding), 1, "unchecked-transfer fired on safe contract src/SafeAmm.sol")
 
     def test_unsuccessful_report_fails_even_with_required_detections(self):
         for fields in (
@@ -96,8 +247,8 @@ class SlitherGateTests(unittest.TestCase):
                 self.assert_gate(report() | fields, 1, "analysis did not succeed")
 
     def test_medium_wins_in_both_orders(self):
-        low = detector("unchecked-transfer", "Low", "src/SafeAmm.sol")
-        medium = detector("unchecked-transfer", "Medium", "src/SafeAmm.sol")
+        low = detector("unchecked-transfer", "Low", "src/SafeLending.sol")
+        medium = detector("unchecked-transfer", "Medium", "src/SafeLending.sol")
         self.assert_gate(report(low), 0, "RESULT: PASS")
         for order in ((low, medium), (medium, low)):
             with self.subTest(first=order[0]["impact"]):

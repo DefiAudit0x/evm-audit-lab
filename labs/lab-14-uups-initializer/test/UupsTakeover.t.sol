@@ -179,13 +179,15 @@ contract UupsTakeoverTest is Test {
         vm.expectRevert();
         impl.initialize(attacker);
 
-        // Upgrade attempts by the attacker revert at the owner gate.
-        EvilUupsImplementation evil = new EvilUupsImplementation();
+        // A compatible target isolates the owner check from the UUID check.
+        VaultV2 next = new VaultV2();
+        assertEq(next.proxiableUUID(), IMPLEMENTATION_SLOT);
+        bytes32 original = vm.load(address(proxy), IMPLEMENTATION_SLOT);
         vm.prank(attacker);
-        vm.expectRevert();
-        SafeUupsVault(payable(address(proxy)))
-            .upgradeToAndCall(address(evil), abi.encodeCall(EvilUupsImplementation.drain, (payable(attacker))));
+        vm.expectRevert(bytes("not owner"));
+        SafeUupsVault(payable(address(proxy))).upgradeToAndCall(address(next), "");
 
+        assertEq(vm.load(address(proxy), IMPLEMENTATION_SLOT), original, "implementation untouched");
         assertEq(address(proxy).balance, PROXY_FUNDING, "funds untouched");
     }
 }

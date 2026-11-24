@@ -42,9 +42,20 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
         for function in functions:
             body = function.code_body
             header = function.code_header
-            if "nonReentrant" in header or "nonReentrant" in body:
+            if re.search(r"\bnonReentrant\b", header):
                 continue
             local_declarations = _local_declarations(body)
+            parameters = re.search(r"\(([^)]*)\)", header)
+            if parameters:
+                for parameter in parameters.group(1).split(","):
+                    # A storage reference is state, not an independent copy:
+                    # writes through it still reach storage, so it must not
+                    # shadow the state name for the whole function body.
+                    if re.search(r"\bstorage\b", parameter):
+                        continue
+                    names = re.findall(r"\b[A-Za-z_]\w*\b", parameter)
+                    if len(names) > 1:
+                        local_declarations.setdefault(names[-1], []).append((0, len(body)))
             interactions = list(INTERACTION.finditer(body))
             if interactions and any(
                 _storage_write_after(body, match.end(), state_names, local_declarations)
@@ -120,9 +131,10 @@ def _local_declarations(body: str) -> dict[str, list[tuple[int, int]]]:
 def _storage_write_pattern(state_names: set[str]) -> re.Pattern[str] | None:
     if not state_names:
         return None
+    names = "|".join(re.escape(name) for name in sorted(state_names, key=len, reverse=True))
     return re.compile(
-        r"\b(" + "|".join(re.escape(name) for name in sorted(state_names, key=len, reverse=True))
-        + r")\s*(?:\[[^\]]+\])?\s*(?:\+\+|--|\+=|-=|\*=|/=|=(?!=))"
+        r"\b(" + names + r")\s*(?:\[[^\]]+\])?\s*(?:\+\+|--|\+=|-=|\*=|/=|=(?!=))"
+        + r"|\bdelete\s+(" + names + r")\s*(?:\[[^\]]+\])?\s*;"
     )
 
 
@@ -142,7 +154,9 @@ def _storage_write_after(
     return bool(
         pattern
         and any(
-            not _is_shadowed(match.group(1), match.start(1), local_declarations)
+            not _is_shadowed(
+                match.group(match.lastindex), match.start(match.lastindex), local_declarations
+            )
             for match in pattern.finditer(body, offset)
         )
     )

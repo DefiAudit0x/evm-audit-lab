@@ -20,10 +20,11 @@ contract VulnerableVault {
         (bool ok,) = msg.sender.call{value: amount}("");
         require(ok, "transfer failed");
 
-        // DAO-style reset: the stale, still-undebited balance keeps passing
-        // the require check across re-entrant calls, so the vault sends more
-        // ETH than the caller is owed while the bookkeeping looks intact.
-        balances[msg.sender] = 0;
+        // Intentionally unchecked so Solidity 0.8 underflow protection does
+        // not mask the reentrancy lesson: nested calls can spend stale credit.
+        unchecked {
+            balances[msg.sender] -= amount;
+        }
     }
 
     receive() external payable {}

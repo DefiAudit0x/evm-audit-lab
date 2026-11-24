@@ -1,7 +1,7 @@
 # Slither suppression decisions
 
 The project has no inline `slither-disable` directives or excluded detectors.
-The gate's eight accepted findings are individually documented below; a `Safe*`
+The gate's eleven accepted findings are individually documented below; a `Safe*`
 filename is not evidence that a finding is harmless. Each exception identifies
 one finding, describes its concrete behavior and assumptions, and cites test or
 source evidence.
@@ -49,6 +49,8 @@ Each acceptance below is owned by DefiAudit0x and expires on 2027-05-21.
 <a id="accepted-1"></a>
 ### Entry 1: `src/SafeFotVault.sol` / `incorrect-equality`
 
+**Location:** 36-45
+
 **Verdict:** ACCEPT (Medium). `deposit` rejects only when the computed balance delta is zero, after checking that the balance did not decrease; a donation increases the received delta and is credited to the depositor. This is a deliberate zero-amount check, not a strict comparison to an expected balance. **Evidence:** deposit tests in `test/FeeOnTransfer.t.sol`.
 
 **Owner:** DefiAudit0x  
@@ -56,6 +58,8 @@ Each acceptance below is owned by DefiAudit0x and expires on 2027-05-21.
 
 <a id="accepted-2"></a>
 ### Entry 2: `src/SafeFotVault.sol` / `reentrancy-balance`
+
+**Location:** 47-58
 
 **Verdict:** ACCEPT (High). `withdraw` uses the shared `nonReentrant` lock, updates the user's balance before the token call, and reverts if the post-call balance check does not match. Nested callbacks cannot enter deposit or withdraw. **Evidence:** `testSafeFotVaultBlocksCallbacksAcrossDepositAndWithdraw` in `test/FeeOnTransfer.t.sol`.
 
@@ -65,6 +69,8 @@ Each acceptance below is owned by DefiAudit0x and expires on 2027-05-21.
 <a id="accepted-3"></a>
 ### Entry 3: `src/SafeLending.sol` / `divide-before-multiply`
 
+**Location:** 65-74
+
 **Verdict:** ACCEPT (Medium). Both divisions in the collateral-value and LTV calculation round down, so the resulting borrow limit is conservative and cannot enable over-borrowing; each rounding loss is less than one wei. No full-precision arithmetic guarantee is claimed. **Evidence:** LTV-cap tests in `test/StaleOracle.t.sol`.
 
 **Owner:** DefiAudit0x  
@@ -72,6 +78,8 @@ Each acceptance below is owned by DefiAudit0x and expires on 2027-05-21.
 
 <a id="accepted-5"></a>
 ### Entry 5: `src/SafeLending.sol` / `unused-return`
+
+**Location:** 108-123
 
 **Verdict:** ACCEPT (Medium). `ConfiguredSafeLending._validatedPrice` intentionally ignores the sequencer feed's `roundId` and `answeredInRound`: it validates status and `startedAt` (nonzero, not future, and beyond the one-hour grace period). The primary price feed separately validates round completeness with `answeredInRound >= roundId`; the sequencer check does not independently validate freshness. **Evidence:** `testL2OracleChecksSequencerStatusAndRecovery` in `test/StaleOracle.t.sol` and the Lab 04 README.
 
@@ -81,6 +89,8 @@ Each acceptance below is owned by DefiAudit0x and expires on 2027-05-21.
 <a id="accepted-7"></a>
 ### Entry 7: `src/SafeSwap.sol` / `incorrect-equality`
 
+**Location:** 57-75
+
 **Verdict:** ACCEPT (Medium). `observations` is kept at length one or two: `swap()` pushes when the count is one and otherwise overwrites slots zero and one. Therefore `count == 2` in `getTWAP` is equivalent to `count >= 2`. **Evidence:** `swap()` in `src/SafeSwap.sol` and TWAP tests in `test/FlashLoan.t.sol`.
 
 **Owner:** DefiAudit0x  
@@ -88,6 +98,8 @@ Each acceptance below is owned by DefiAudit0x and expires on 2027-05-21.
 
 <a id="accepted-8"></a>
 ### Entry 8: `src/SafeUupsVault.sol` / `controlled-delegatecall`
+
+**Location:** 52-71
 
 **Verdict:** ACCEPT (High). The delegatecall is the defined UUPS upgrade-and-call behavior. The operation requires `onlyProxy`, `onlyOwner`, and a target that passes the proxiable UUID compatibility check; the residual risk is the documented trust in the owner. **Evidence:** unauthorized-upgrade tests in `test/UupsTakeover.t.sol` and the guards in `src/SafeUupsVault.sol`.
 
@@ -97,6 +109,8 @@ Each acceptance below is owned by DefiAudit0x and expires on 2027-05-21.
 <a id="accepted-9"></a>
 ### Entry 9: `src/SafeVault4626.sol` / `incorrect-equality`
 
+**Location:** 49-64
+
 **Verdict:** ACCEPT (Medium). `deposit` requires the measured receipt to equal the requested assets and reverts otherwise, enforcing the documented exact-transfer, non-rebasing asset assumption. A donation that makes the receipt larger also reverts, so accounting does not proceed on an incorrect assumption. **Evidence:** fee-token rejection tests in `test/InflationAttack.t.sol`.
 
 **Owner:** DefiAudit0x  
@@ -105,7 +119,39 @@ Each acceptance below is owned by DefiAudit0x and expires on 2027-05-21.
 <a id="accepted-10"></a>
 ### Entry 10: `src/SafeVault4626.sol` / `reentrancy-balance`
 
+**Location:** 66-84
+
 **Verdict:** ACCEPT (High). `withdraw` uses `nonReentrant`, burns the user's shares and reduces `totalShares` before the token call, and reverts on a post-call balance mismatch. Nested deposit and withdrawal callback attempts are blocked. **Evidence:** `testSafeVaultBlocksNestedDepositAndWithdrawalCallbacks` in `test/InflationAttack.t.sol`.
+
+**Owner:** DefiAudit0x  
+**Expiry:** 2027-05-21
+
+<a id="accepted-11"></a>
+### Entry 11: `src/SafeFotVault.sol` / `reentrancy-balance`
+
+**Location:** 36-45
+
+**Verdict:** ACCEPT (High). `deposit` is guarded by the shared `nonReentrant` lock, so no callback can re-enter while the deposit is in flight; the post-call balance checks (`afterBalance < beforeBalance`, `received == 0`) only ever revert (fail-closed) and the credit is the measured `afterBalance - beforeBalance`. **Evidence:** `testSafeFotVaultBlocksCallbacksAcrossDepositAndWithdraw` in `test/FeeOnTransfer.t.sol`.
+
+**Owner:** DefiAudit0x  
+**Expiry:** 2027-05-21
+
+<a id="accepted-12"></a>
+### Entry 12: `src/SafeVault4626.sol` / `reentrancy-balance`
+
+**Location:** 49-64
+
+**Verdict:** ACCEPT (High). `deposit` is guarded by the shared `nonReentrant` lock; shares mint only from the measured receipt after `transferFrom` settles, and the post-call checks (`assetsAfter < assetsBefore`, `received == assets`, `minted > 0`) only ever revert. **Evidence:** fee-token rejection tests in `test/InflationAttack.t.sol`.
+
+**Owner:** DefiAudit0x  
+**Expiry:** 2027-05-21
+
+<a id="accepted-13"></a>
+### Entry 13: `src/SafeLending.sol` / `unused-return`
+
+**Location:** 76-90
+
+**Verdict:** ACCEPT (Medium). Base `_validatedPrice` ignores only the third return value (`startedAt`) of `oracle.latestRoundData()`; freshness is established via `updatedAt` (nonzero, not future, within the staleness window) and round completeness via `answeredInRound >= roundId`, so `startedAt` adds nothing for the primary feed. **Evidence:** oracle validation tests in `test/StaleOracle.t.sol`.
 
 **Owner:** DefiAudit0x  
 **Expiry:** 2027-05-21

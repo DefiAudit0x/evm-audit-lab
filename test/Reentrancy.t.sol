@@ -13,7 +13,8 @@ import {SafeVault} from "../src/SafeVault.sol";
 /// Threat model:
 ///   An attacker contract receives ETH via `receive()` and re-enters
 ///   `vault.withdraw()` before the vault has decremented the attacker's
-///   balance. The vault sends ETH twice but only debits once.
+///   balance. Both calls send ETH before their debits; the outer debit
+///   then underflows in the intentionally unchecked accounting.
 ///
 /// Violated invariant:
 ///   "balances[msg.sender] >= amount held" — broken because accounting
@@ -85,6 +86,21 @@ contract ReentrancyTest is Test {
 
         assertEq(address(attacker).balance, 2 ether, "attacker did not drain twice");
         assertEq(address(vulnerable).balance, 0, "vault still has funds");
+    }
+
+    function testPartialWithdrawalPreservesRemainingCredit() public {
+        address depositor = makeAddr("depositor");
+        vm.deal(depositor, 2 ether);
+        vm.startPrank(depositor);
+
+        vulnerable.deposit{value: 2 ether}();
+        vulnerable.withdraw(1 ether);
+        assertEq(vulnerable.balances(depositor), 1 ether, "remaining credit lost");
+
+        vulnerable.withdraw(1 ether);
+        assertEq(vulnerable.balances(depositor), 0, "credit not fully withdrawn");
+        assertEq(depositor.balance, 2 ether, "depositor did not recover both withdrawals");
+        vm.stopPrank();
     }
 
     /// @notice Regression: SafeVault rejects re-entry.

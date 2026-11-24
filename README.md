@@ -149,13 +149,13 @@ Tool output (Slither, Foundry fuzz) is treated as a **lead for manual verificati
 
 ### Static analysis in CI
 
-A second workflow (`.github/workflows/slither.yml`) runs Slither on every push and enforces three rules encoded in `.github/scripts/check_slither.py`:
+A second workflow (`.github/workflows/slither.yml`) runs pinned Slither 0.11.6 on every push and enforces these checks encoded in `.github/scripts/check_slither.py`:
 
-1. **Lab integrity** — the detector for each gateable lab's core class must fire on its `Vulnerable*` contract (reentrancy-eth, tx-origin + arbitrary-send-eth, unchecked-transfer). If the lab stops teaching what the tool actually flags, CI fails.
-2. **Safe regression** — the same detector must stay silent on the `Safe*` counterpart, so a refactor cannot reintroduce the lab's bug unnoticed.
-3. **Written triage** — any remaining High/Medium finding on a `Safe*` contract needs an explicit allowlist entry with a reason (scope separation: a Safe contract is remediated for *its* lab's class, not every class).
+1. **Lab detector signals** — selected findings must appear on the `Vulnerable*` examples. `reentrancy-eth` (Lab 01), `tx-origin` (Lab 02), and `unchecked-transfer` (Lab 10) check the taught behaviour directly. `arbitrary-send-eth` on Lab 02 checks the consequence of its authorization bypass. Lab 06's `unchecked-transfer` checks token-call handling, while its sandwich/slippage lesson is manual. Lab 14's `controlled-delegatecall` and `arbitrary-send-eth` findings check upgrade and custody-loss consequences; its unguarded-initializer lesson is manual.
+2. **Safe scan coverage and companion behaviour** — Slither's compilation metadata must list every `src/Safe*.sol` counterpart as scanned. The gate requires `reentrancy-eth` to stay silent on `SafeVault`; `tx-origin` and `arbitrary-send-eth` on `SafeAccess`; `unchecked-transfer` on `SafeAmm` (token-call handling) and `SafeRouter` (Lab 10's discarded return); and `arbitrary-send-eth` on `SafeUupsVault` (owner-guarded withdrawal). These checks cover the named behaviours; they do not establish that every Safe contract is free of every finding.
+3. **Written triage** — any remaining High/Medium finding on a `Safe*` contract needs an explicit allowlist entry with a reason. A safe contract is remediated for its lab's lesson, not every detector category.
 
-Vulnerability classes static analysis cannot see (flash-loan and stale-oracle manipulation, rounding inflation, storage-collision layout, signature replay, missing access control) are deliberately **not gated** — they are listed in the CI output as the boundary between tooling and manual reasoning.
+The core lessons for flash-loan and stale-oracle manipulation, rounding inflation, proxy storage collision, signature replay, missing access control, share-price inflation, unbounded-loop gas denial of service, fee-on-transfer accounting, and an unguarded UUPS initializer require manual reasoning or tests. The CI output lists them as **SKIPPED**, not as detector checks. In particular, `proxy-storage-collision` is not in the pinned Slither 0.11.6 detector catalog. Slither findings are leads for review, not proof of safety.
 
 ## Responsible use
 
