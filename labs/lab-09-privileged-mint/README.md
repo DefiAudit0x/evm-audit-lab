@@ -30,10 +30,11 @@ Because the token is fully backed 1:1 by ETH and `redeem` pays out that backing,
 ```
 contract holds 5 ETH reserve, totalSupply = 0
 
-attacker.mint(attacker, 5 tokens)   -> totalSupply = 5, no access check
+honest holder mints 2 tokens        -> totalSupply = 2 (honest issuance)
+attacker.mint(attacker, 5 tokens)   -> totalSupply = 7, no access check
 attacker.redeem(5 tokens)           -> 5 ETH leaves the reserve to the attacker
 
-contract balance: 0                 -> honest holders now hold unbacked claims
+contract balance: 0                 -> the honest holder's 2 tokens are now unbacked claims
 ```
 
 The same shape appears everywhere in production: mint gates on wrapped

@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,95 @@ from audit.detectors.storage_collision import detect_source as detect_storage_co
 from audit.detectors import precision, proxy_upgrade, reentrancy
 from audit.detectors.solidity import contract_blocks
 from audit.detectors.storage_collision import EIP1967_ADMIN, EIP1967_IMPLEMENTATION, _dedicated_slot_status, _resolved_storage_layout
+
+
+# Scope-semantics fixtures shared by the detector tests and the solc
+# compilation check (Fix 131). One copy of each string: a fixture that
+# cannot compile must fail the compile check instead of silently testing
+# an impossible program (m-20).
+SCOPE_FIXTURE_O3 = """
+contract Base {
+    uint256 internal scratch;
+}
+contract Child is Base {
+    function update(address receiver) external {
+        (bool ok,) = receiver.call("");
+        require(ok);
+        uint256 scratch = 1;
+    }
+}
+"""
+# The pre-fix m-20 fixture: a `private` base field is invisible to the
+# child, so `scratch = 1;` is an undeclared identifier under solc 0.8.24.
+SCOPE_FIXTURE_O3_PRIVATE = """
+contract Base {
+    uint256 private scratch;
+}
+contract Child is Base {
+    function update(address receiver) external {
+        (bool ok,) = receiver.call("");
+        require(ok);
+        scratch = 1;
+    }
+}
+"""
+SCOPE_FIXTURE_P1 = """
+contract Base {
+    uint256 internal scratch;
+}
+contract Child is Base {
+    function update(address receiver) external {
+        (bool ok,) = receiver.call("");
+        require(ok);
+        { uint256 scratch = 1; }
+        scratch = 1;
+    }
+}
+"""
+SCOPE_FIXTURE_P2 = """
+contract Base {
+    uint256 internal balance;
+}
+contract Child is Base {
+    function update(address receiver) external {
+        delete balance;
+        (bool ok,) = receiver.call("");
+        require(ok);
+        balance = 1;
+    }
+}
+"""
+SCOPE_FIXTURE_N3 = """
+contract Base {
+    mapping(address => uint256) internal balances;
+}
+contract Child is Base {
+    function withdraw() external {
+        payable(msg.sender).transfer(balances[msg.sender]);
+        balances[msg.sender] = 0;
+    }
+}
+"""
+SCOPE_FIXTURE_D09_TEMPLATE = """
+contract Vault {
+    PRECEDING_MEMBER
+    function update(address receiver) external {
+        (bool ok,) = receiver.call("");
+        require(ok);
+        balances[msg.sender] = 0;
+    }
+    mapping(address => uint256) balances;
+}
+"""
+SCOPE_FIXTURE_D09_LOCAL_ONLY = """
+contract Example {
+    function update(address receiver) external {
+        (bool ok,) = receiver.call("");
+        require(ok);
+        uint256 scratch = 0;
+    }
+}
+"""
 
 
 class DetectorTests(unittest.TestCase):
@@ -34,9 +124,28 @@ class DetectorTests(unittest.TestCase):
             (item["detector"], item["file"], item["contract"])
             for item in json.loads(result.stdout)["findings"]
         }
+        # Title-aware reduction (Imp 17): the 3-tuple above lets one
+        # warning mask a missing warning from the same detector, so
+        # positive assertions must use the title as well. Negatives keep
+        # the 3-tuple: "no finding of this detector on this contract".
+        cls.findings_detailed = {
+            (item["detector"], item["file"], item["contract"], item["title"])
+            for item in json.loads(result.stdout)["findings"]
+        }
+
+    def assert_finding(self, detector, file, contract, title):
+        """Assert one titled finding fired (see findings_detailed)."""
+        self.assertIn(
+            (detector, file, contract, title), self.findings_detailed
+        )
 
     def test_reentrancy_flags_vulnerable_vault(self):
-        self.assertIn(("reentrancy", "src/VulnerableVault.sol", "VulnerableVault"), self.findings)
+        self.assert_finding(
+            "reentrancy",
+            "src/VulnerableVault.sol",
+            "VulnerableVault",
+            "External interaction precedes state effects (cross-function reentrancy)",
+        )
 
     def test_reentrancy_ignores_safe_vault(self):
         self.assertNotIn(("reentrancy", "src/SafeVault.sol", "SafeVault"), self.findings)
@@ -130,7 +239,12 @@ class DetectorTests(unittest.TestCase):
                 )
 
     def test_storage_collision_flags_vulnerable_proxy(self):
-        self.assertIn(("storage_collision", "src/VulnerableProxy.sol", "VulnerableProxy"), self.findings)
+        self.assert_finding(
+            "storage_collision",
+            "src/VulnerableProxy.sol",
+            "VulnerableProxy",
+            "Proxy slot 0 overlaps implementation storage",
+        )
 
     def test_storage_collision_ignores_safe_proxy(self):
         self.assertNotIn(("storage_collision", "src/SafeProxy.sol", "SafeProxy"), self.findings)
@@ -229,13 +343,23 @@ class DetectorTests(unittest.TestCase):
         self.assertFalse(any(finding.contract == "SyntheticProxy" for finding in findings))
 
     def test_oracle_flags_vulnerable_lending(self):
-        self.assertIn(("oracle", "src/VulnerableLending.sol", "VulnerableLending"), self.findings)
+        self.assert_finding(
+            "oracle",
+            "src/VulnerableLending.sol",
+            "VulnerableLending",
+            "Oracle answer is missing validation checks",
+        )
 
     def test_oracle_ignores_safe_lending(self):
         self.assertNotIn(("oracle", "src/SafeLending.sol", "SafeLending"), self.findings)
 
     def test_oracle_flags_vulnerable_swap(self):
-        self.assertIn(("oracle", "src/VulnerableSwap.sol", "VulnerableSwap"), self.findings)
+        self.assert_finding(
+            "oracle",
+            "src/VulnerableSwap.sol",
+            "VulnerableSwap",
+            "Oracle exposes a manipulable reserve spot price",
+        )
 
     def test_oracle_ignores_safe_swap(self):
         self.assertNotIn(("oracle", "src/SafeSwap.sol", "SafeSwap"), self.findings)
@@ -331,7 +455,28 @@ class DetectorTests(unittest.TestCase):
         self.assertEqual(findings[0].line, refresh_line)
 
     def test_precision_flags_vulnerable_pool(self):
-        self.assertIn(("precision", "src/VulnerablePool.sol", "VulnerablePool"), self.findings)
+        self.assert_finding(
+            "precision",
+            "src/VulnerablePool.sol",
+            "VulnerablePool",
+            "Share deposit may accept a zero-rounded mint",
+        )
+
+    def test_precision_flags_vulnerable_vault4626_both_warnings(self):
+        # Two distinct precision warnings fire on this contract; assert
+        # both titles so neither masks the other (Imp 17).
+        self.assert_finding(
+            "precision",
+            "src/VulnerableVault4626.sol",
+            "VulnerableVault4626",
+            "Share deposit may accept a zero-rounded mint",
+        )
+        self.assert_finding(
+            "precision",
+            "src/VulnerableVault4626.sol",
+            "VulnerableVault4626",
+            "Share price uses externally mutable live balance",
+        )
 
     def test_precision_ignores_safe_pool(self):
         self.assertNotIn(("precision", "src/SafePool.sol", "SafePool"), self.findings)
@@ -746,13 +891,23 @@ class DetectorTests(unittest.TestCase):
         return precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
 
     def test_access_control_flags_vulnerable_access(self):
-        self.assertIn(("access_control", "src/VulnerableAccess.sol", "VulnerableAccess"), self.findings)
+        self.assert_finding(
+            "access_control",
+            "src/VulnerableAccess.sol",
+            "VulnerableAccess",
+            "Authorization depends on tx.origin",
+        )
 
     def test_access_control_ignores_safe_access(self):
         self.assertNotIn(("access_control", "src/SafeAccess.sol", "SafeAccess"), self.findings)
 
     def test_access_control_flags_event_only_msg_sender_mint(self):
-        self.assertIn(("access_control", "src/VulnerableMint.sol", "VulnerableMint"), self.findings)
+        self.assert_finding(
+            "access_control",
+            "src/VulnerableMint.sol",
+            "VulnerableMint",
+            "Privileged entry point `mint` lacks caller authorization",
+        )
 
     def test_access_control_flags_event_only_msg_sender_in_synthetic_source(self):
         source = """
@@ -796,13 +951,81 @@ class DetectorTests(unittest.TestCase):
         return detect_source(ROOT, Path("src/SyntheticMint.sol"), source)
 
     def test_access_control_flags_unprotected_initializer(self):
-        self.assertIn(("access_control", "src/VulnerableUupsVault.sol", "VulnerableUupsVault"), self.findings)
+        self.assert_finding(
+            "access_control",
+            "src/VulnerableUupsVault.sol",
+            "VulnerableUupsVault",
+            "Privileged entry point `initialize` lacks caller authorization",
+        )
 
     def test_access_control_ignores_one_shot_safe_initializer(self):
         self.assertNotIn(("access_control", "src/SafeUupsVault.sol", "SafeUupsVault"), self.findings)
 
     def test_proxy_upgrade_flags_vulnerable_uups_vault(self):
-        self.assertIn(("proxy_upgrade", "src/VulnerableUupsVault.sol", "VulnerableUupsVault"), self.findings)
+        # Two distinct proxy_upgrade warnings fire on this contract; the
+        # old 3-tuple assertion let one mask the other (Imp 17).
+        self.assert_finding(
+            "proxy_upgrade",
+            "src/VulnerableUupsVault.sol",
+            "VulnerableUupsVault",
+            "Initializer can overwrite privileged state repeatedly",
+        )
+        self.assert_finding(
+            "proxy_upgrade",
+            "src/VulnerableUupsVault.sol",
+            "VulnerableUupsVault",
+            "Upgrade path omits compatibility or context checks",
+        )
+
+    def test_title_assertions_catch_masked_missing_finding(self):
+        # Imp 17 mutation check: one detector fires two titled warnings
+        # on one contract. Guarding the initializer removes exactly one;
+        # the old (detector, file, contract) reduction still passes on
+        # the variant, while the title-aware assertion must fail.
+        source = """
+        contract Vault {
+            address owner;
+            bool initialized;
+            function initialize(address nextOwner) external {
+                owner = nextOwner;
+            }
+            function upgradeToAndCall(address newImpl, bytes calldata data) external {
+                (bool ok,) = newImpl.delegatecall(data);
+                require(ok);
+            }
+        }
+        """
+        findings = proxy_upgrade.detect_source(ROOT, Path("src/Synthetic.sol"), source)
+        self.assertEqual(
+            {item.title for item in findings},
+            {
+                "Initializer can overwrite privileged state repeatedly",
+                "Upgrade path omits compatibility or context checks",
+            },
+        )
+        old_style = {
+            (item.detector, item.file, item.contract) for item in findings
+        }
+        guarded_init = source.replace(
+            "owner = nextOwner;",
+            "require(!initialized); initialized = true; owner = nextOwner;",
+        )
+        variant = proxy_upgrade.detect_source(
+            ROOT, Path("src/Synthetic.sol"), guarded_init
+        )
+        self.assertEqual(len(variant), 1)
+        self.assertEqual(
+            {(item.detector, item.file, item.contract) for item in variant},
+            old_style,
+        )
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                {item.title for item in variant},
+                {
+                    "Initializer can overwrite privileged state repeatedly",
+                    "Upgrade path omits compatibility or context checks",
+                },
+            )
 
     def test_proxy_upgrade_ignores_safe_uups_vault(self):
         self.assertNotIn(("proxy_upgrade", "src/SafeUupsVault.sol", "SafeUupsVault"), self.findings)
@@ -1336,6 +1559,63 @@ class DetectorMinorTests(unittest.TestCase):
         isolated = source.replace("address admin;", "")
         self.assertEqual(detect_storage_collision_source(ROOT, self.path, isolated), [])
 
+    def test_storage_collision_unrelated_contract_is_unverified_candidate(self):
+        # m-19: an unrelated stateful contract must not be reported as a
+        # high-confidence implementation collision against the proxy.
+        proxy = """
+        contract Proxy {
+            address admin;
+            address implementation;
+            fallback() external {
+                address impl = implementation;
+                assembly { let result := delegatecall(gas(), impl, 0, 0, 0, 0) }
+            }
+        }
+        contract Logic {
+            uint256 value;
+        }
+        """
+        findings = detect_storage_collision_source(ROOT, self.path, proxy)
+        self.assertEqual(
+            [(item.title, item.confidence) for item in findings],
+            [("Proxy slot 0 overlaps implementation storage", "high")],
+        )
+        unrelated = proxy + """
+        contract UnrelatedToken {
+            uint256 totalSupply;
+        }
+        """
+        findings = detect_storage_collision_source(ROOT, self.path, unrelated)
+        self.assertEqual(
+            [(item.title, item.confidence) for item in findings],
+            [
+                ("Proxy slot 0 overlaps implementation storage", "high"),
+                ("Proxy slot 0 may overlap unverified implementation storage", "medium"),
+            ],
+        )
+        self.assertIn("unverified", findings[1].message)
+        self.assertIn("UnrelatedToken", findings[1].message)
+        # A proxy that references its implementation by name is related,
+        # so its pairing keeps high confidence.
+        referenced = """
+        contract Proxy {
+            address admin;
+            Logic implementation;
+            fallback() external {
+                address impl = address(implementation);
+                assembly { let result := delegatecall(gas(), impl, 0, 0, 0, 0) }
+            }
+        }
+        contract Logic {
+            uint256 value;
+        }
+        """
+        findings = detect_storage_collision_source(ROOT, self.path, referenced)
+        self.assertEqual(
+            [(item.title, item.confidence) for item in findings],
+            [("Proxy slot 0 overlaps implementation storage", "high")],
+        )
+
     def test_d06_reassignment_invalidates_slot_read(self):
         source = f"""
         contract Proxy {{
@@ -1517,28 +1797,13 @@ class DetectorMinorTests(unittest.TestCase):
     def test_d09_reads_state_declarations_after_functions_and_constructors(self):
         for preceding_member in ("constructor() {}", "function helper() private {}"):
             with self.subTest(preceding_member=preceding_member):
-                source = f"""
-                contract Vault {{
-                    {preceding_member}
-                    function update(address receiver) external {{
-                        (bool ok,) = receiver.call("");
-                        require(ok);
-                        balances[msg.sender] = 0;
-                    }}
-                    mapping(address => uint256) balances;
-                }}
-                """
+                source = SCOPE_FIXTURE_D09_TEMPLATE.replace(
+                    "PRECEDING_MEMBER", preceding_member
+                )
                 self.assertEqual(len(reentrancy.detect_source(ROOT, self.path, source)), 1)
-        local_only = """
-        contract Example {
-            function update(address receiver) external {
-                (bool ok,) = receiver.call("");
-                require(ok);
-                uint256 scratch = 0;
-            }
-        }
-        """
-        self.assertEqual(reentrancy.detect_source(ROOT, self.path, local_only), [])
+        self.assertEqual(
+            reentrancy.detect_source(ROOT, self.path, SCOPE_FIXTURE_D09_LOCAL_ONLY), []
+        )
 
     def test_d10_unrelated_twap_members_do_not_hide_spot_getter(self):
         for member in (
@@ -1611,17 +1876,7 @@ class DetectorMinorTests(unittest.TestCase):
                 self.assertEqual(bool(proxy_upgrade.detect_source(ROOT, self.path, source)), expected)
 
     def test_n3_reentrancy_resolves_inherited_storage(self):
-        source = """
-        contract Base {
-            mapping(address => uint256) internal balances;
-        }
-        contract Child is Base {
-            function withdraw() external {
-                payable(msg.sender).transfer(balances[msg.sender]);
-                balances[msg.sender] = 0;
-            }
-        }
-        """
+        source = SCOPE_FIXTURE_N3
         findings = reentrancy.detect_source(ROOT, self.path, source)
         self.assertEqual([item.contract for item in findings], ["Child"])
         unrelated = source.replace("Child is Base", "Child")
@@ -1733,18 +1988,7 @@ class DetectorMinorTests(unittest.TestCase):
         )
 
     def test_o3_inherited_storage_write_ignores_local_shadow_only_after_declaration(self):
-        source = """
-        contract Base {
-            uint256 private scratch;
-        }
-        contract Child is Base {
-            function update(address receiver) external {
-                (bool ok,) = receiver.call("");
-                require(ok);
-                uint256 scratch = 1;
-            }
-        }
-        """
+        source = SCOPE_FIXTURE_O3
         self.assertEqual(reentrancy.detect_source(ROOT, self.path, source), [])
 
         storage_write = source.replace("uint256 scratch = 1;", "scratch = 1;")
@@ -1759,38 +2003,14 @@ class DetectorMinorTests(unittest.TestCase):
 
 
     def test_p1_inherited_storage_write_after_local_scope_ends(self):
-        source = """
-        contract Base {
-            uint256 internal scratch;
-        }
-        contract Child is Base {
-            function update(address receiver) external {
-                (bool ok,) = receiver.call("");
-                require(ok);
-                { uint256 scratch = 1; }
-                scratch = 1;
-            }
-        }
-        """
+        source = SCOPE_FIXTURE_P1
         findings = reentrancy.detect_source(ROOT, self.path, source)
         self.assertEqual([item.contract for item in findings], ["Child"])
-        local_only = source.replace("}\n                scratch = 1;", "scratch = 1; }")
+        local_only = source.replace("}\n        scratch = 1;", "scratch = 1; }")
         self.assertEqual(reentrancy.detect_source(ROOT, self.path, local_only), [])
 
     def test_p2_statement_keywords_do_not_shadow_inherited_storage(self):
-        source = """
-        contract Base {
-            uint256 internal balance;
-        }
-        contract Child is Base {
-            function update(address receiver) external {
-                delete balance;
-                (bool ok,) = receiver.call("");
-                require(ok);
-                balance = 1;
-            }
-        }
-        """
+        source = SCOPE_FIXTURE_P2
         findings = reentrancy.detect_source(ROOT, self.path, source)
         self.assertEqual([item.contract for item in findings], ["Child"])
         for keyword in (
@@ -1802,6 +2022,104 @@ class DetectorMinorTests(unittest.TestCase):
         for type_name in ("uint256", "address payable", "CustomContract", "uint256[]"):
             with self.subTest(type_name=type_name):
                 self.assertIn("balance", reentrancy._local_declarations(f"{type_name} balance;"))
+
+
+class DetectorFixtureCompileTests(unittest.TestCase):
+    """Compile the scope-semantics fixtures with solc 0.8.24 (Imp 18).
+
+    Only the small synthetic fixtures are compiled, never the whole repo,
+    so the check stays fast. A fixture that cannot compile fails here
+    instead of silently establishing scope semantics for an impossible
+    program (m-20).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.solc = cls._find_solc()
+        if cls.solc is None:
+            raise RuntimeError(
+                "solc 0.8.24 not found: run `forge test` first (it populates "
+                "Foundry's svm cache) or put solc 0.8.24 on PATH"
+            )
+
+    @staticmethod
+    def _find_solc():
+        # `solc` on PATH first, then Foundry's svm cache, which `forge
+        # test` populates — CI runs forge test before this suite.
+        candidates = []
+        path_solc = shutil.which("solc")
+        if path_solc:
+            candidates.append(Path(path_solc))
+        home = Path.home()
+        candidates.extend(
+            [
+                home / ".local/share/svm/0.8.24/solc-0.8.24",
+                home / ".svm/0.8.24/solc-0.8.24",
+            ]
+        )
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            result = subprocess.run(
+                [str(candidate), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and "0.8.24" in result.stdout:
+                return str(candidate)
+        return None
+
+    def compile_source(self, source):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Fixture.sol"
+            path.write_text(source, encoding="utf-8")
+            return subprocess.run(
+                [self.solc, "--bin", str(path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+    def test_scope_fixtures_compile(self):
+        cases = {
+            "o3 local shadow": SCOPE_FIXTURE_O3,
+            "o3 storage write": SCOPE_FIXTURE_O3.replace(
+                "uint256 scratch = 1;", "scratch = 1;"
+            ),
+            "o3 write before shadow": SCOPE_FIXTURE_O3.replace(
+                "uint256 scratch = 1;", "scratch = 1; uint256 scratch = 2;"
+            ),
+            "p1 scoped block": SCOPE_FIXTURE_P1,
+            "p1 local only": SCOPE_FIXTURE_P1.replace(
+                "}\n        scratch = 1;", "scratch = 1; }"
+            ),
+            "p2 delete and write": SCOPE_FIXTURE_P2,
+            "n3 inherited mapping": SCOPE_FIXTURE_N3,
+            # The n3 "unrelated child" variant (Child without `is Base`)
+            # is deliberately NOT compiled: it references `balances`
+            # without inheriting it, so it is invalid Solidity by design
+            # — it probes name resolution, not a program. test_n3 still
+            # pins the detector behavior for it.
+            "d09 after constructor": SCOPE_FIXTURE_D09_TEMPLATE.replace(
+                "PRECEDING_MEMBER", "constructor() {}"
+            ),
+            "d09 after helper": SCOPE_FIXTURE_D09_TEMPLATE.replace(
+                "PRECEDING_MEMBER", "function helper() private {}"
+            ),
+            "d09 local only": SCOPE_FIXTURE_D09_LOCAL_ONLY,
+        }
+        for label, source in cases.items():
+            with self.subTest(fixture=label):
+                result = self.compile_source(source)
+                self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    def test_m20_private_fixture_does_not_compile(self):
+        # The pre-fix m-20 premise: a `private` base field cannot be
+        # assigned from the child, so the fixture must fail the check.
+        result = self.compile_source(SCOPE_FIXTURE_O3_PRIVATE)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Undeclared identifier", result.stderr + result.stdout)
 
 
 if __name__ == "__main__":

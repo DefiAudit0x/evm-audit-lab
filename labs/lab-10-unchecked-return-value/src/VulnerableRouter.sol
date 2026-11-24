@@ -9,8 +9,8 @@ import {IERC20} from "./shared/IERC20.sol";
 ///      `token.transfer` and ignores the returned `bool`. Tokens that
 ///      signal failure by returning false (USDT-style) instead of
 ///      reverting make the router record a claim that never paid out —
-///      the user's entitlement is erased and the tokens stay in the
-///      router forever.
+///      the user's entitlement is erased unless explicitly restored, and
+///      the tokens stay in the router until then.
 contract VulnerableRouter {
     IERC20 public immutable token;
     mapping(address => uint256) public claimable;
@@ -39,7 +39,9 @@ contract VulnerableRouter {
         // the user was paid.
         token.transfer(msg.sender, amount);
 
-        // The entitlement is erased either way — the user can never retry.
+        // The entitlement is erased either way — the user cannot retry
+        // unless it is explicitly restored (this example's unrestricted
+        // `setClaimable` helper can restore it).
         claimed[msg.sender] = amount;
         delete claimable[msg.sender];
 

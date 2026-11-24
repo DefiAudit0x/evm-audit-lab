@@ -8,16 +8,16 @@ interface IPriceOracle {
 }
 
 /// @title VulnerableSwap
-/// @notice Lab 03 — Vulnerable DEX-like swap that reads spot price from
-///         a single on-chain oracle (a Uniswap-V2-style pool balance).
-/// @dev DO NOT DEPLOY. The "price" is derived from reserves that an
-///      attacker can manipulate within a single transaction using a
-///      flash loan.
-///
-/// Threat model:
-///   An attacker with no capital can borrow a huge amount of one asset
-///   via a flash loan, swap it into the pool to skew the price, exploit
-///   the consumer contract, then repay the loan in the same transaction.
+/// @notice Lab 03 — Reserve-manipulation model: a DEX-like swap over
+///         synthetic reserves whose ratio is the spot quote.
+/// @dev DO NOT DEPLOY. This is a reserve-only model: `swap` only changes
+///      synthetic reserve state and `getPrice` only reads their ratio.
+///      No tokens are transferred, no flash loan is obtained or repaid,
+///      no fee is charged, and no downstream consumer is modeled. The
+///      stored `oracle` is unused by the swap logic. A real protocol
+///      that trusts such a manipulable spot quote may be exposed, but
+///      this lab does not implement or measure that consumer or an
+///      end-to-end exploit.
 ///
 /// Violated invariant:
 ///   "The on-chain spot price reflects the fair market price."
@@ -37,7 +37,9 @@ contract VulnerableSwap {
     ///         reserveB / reserveA.
     function swap(uint256 amountIn) external {
         reserveA += amountIn;
-        // Constant product k = reserveA * reserveB must be preserved.
+        // Constant product k = reserveA * reserveB is nondecreasing, not
+        // exactly constant: integer rounding can increase it. E.g. reserves
+        // (3, 10) + swap(1) -> (4, 8), product 30 -> 32.
         uint256 amountOut = (reserveB * amountIn) / reserveA;
         reserveB -= amountOut;
     }

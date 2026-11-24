@@ -8,9 +8,13 @@ pragma solidity ^0.8.24;
 ///      The signed message carries no nonce, no deadline, no chain id and
 ///      no verifying-contract address, and consumed signatures are never
 ///      tracked. Anyone who observes one valid payout (in the mempool or
-///      on-chain) can resubmit the exact same signature until the vault is
-///      empty, and can also reuse the signature verbatim on any other
-///      contract that hashes the same layout (cross-contract replay).
+///      on-chain) can resubmit the exact same signature, repeating the
+///      fixed-size payout while funds suffice and the recipient accepts
+///      payment; completely draining the vault requires suitable amounts,
+///      not just one observed signature. The signature can also be reused
+///      verbatim on any other contract that hashes the same layout, trusts
+///      the same signer as its authority, and accepts the same signature
+///      scheme (cross-contract replay).
 contract VulnerableSignature {
     address public immutable authority;
 

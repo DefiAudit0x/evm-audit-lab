@@ -124,6 +124,36 @@ contract UncheckedReturnTest is Test {
         assertEq(good.balanceOf(claimant), ALLOCATION, "honest token pays out fine");
     }
 
+    function testSafeRouterClaimSucceedsAfterEarlierFailedTransfer() public {
+        // A token that fails transfers until unpaused: the first claim
+        // reverts and preserves the entitlement, the second — after the
+        // token recovers — pays out in full. Retryability is proven
+        // through an actual payout, not allocation replacement alone.
+        FlakyToken token = new FlakyToken();
+        SafeRouter retryable = new SafeRouter(address(token));
+        token.mint(address(retryable), ALLOCATION);
+        retryable.setClaimable(claimant, ALLOCATION);
+
+        token.setFailing(true);
+        vm.expectRevert(SafeRouter.TransferFailed.selector);
+        vm.prank(claimant);
+        retryable.claim();
+
+        assertEq(retryable.claimable(claimant), ALLOCATION, "entitlement preserved after failure");
+        assertEq(retryable.claimed(claimant), 0, "no phantom claim recorded");
+        assertEq(retryable.totalClaimable(), ALLOCATION);
+        assertEq(token.balanceOf(claimant), 0, "nothing paid while the token fails");
+
+        token.setFailing(false);
+        vm.prank(claimant);
+        retryable.claim();
+
+        assertEq(token.balanceOf(claimant), ALLOCATION, "retry pays out in full");
+        assertEq(retryable.claimed(claimant), ALLOCATION, "claim recorded on retry");
+        assertEq(retryable.claimable(claimant), 0, "allocation consumed by the retry");
+        assertEq(retryable.totalClaimable(), 0);
+    }
+
     function testSafeRouterRejectsUnauthorizedAllocation() public {
         safe.setClaimable(claimant, ALLOCATION);
         vm.prank(claimant);
@@ -297,5 +327,28 @@ contract CallbackClaimant {
             require(!ok, "double claim succeeded");
             failure = bytes4(result);
         }
+    }
+}
+
+/// @dev Token whose transfer fails (returns false) while paused and pays
+///      normally once unpaused, so a claim can fail first and succeed later.
+contract FlakyToken {
+    mapping(address => uint256) public balanceOf;
+    bool public failing;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function setFailing(bool failing_) external {
+        failing = failing_;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        if (failing) return false;
+        require(balanceOf[msg.sender] >= amount, "insufficient balance");
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        return true;
     }
 }

@@ -55,7 +55,7 @@ forge test --match-contract ProxyCollisionTest --match-test testVulnerableProxyA
 
 ## Remediation
 
-`SafeProxy.sol` implements the canonical fixes:
+`SafeProxy.sol` implements the canonical storage fixes:
 
 1. **EIP-1967 dedicated slots** — store the implementation, admin, and
    beacon at `keccak256(...)-1` slots that no realistic storage layout can
@@ -66,7 +66,11 @@ forge test --match-contract ProxyCollisionTest --match-test testVulnerableProxyA
    reuse slots from earlier versions.
 3. **Initializers, not constructors** — implementation logic deployed
    behind a proxy cannot rely on `constructor` state; use an
-   `initializer`-guarded function called once.
+   `initializer`-guarded function called once. Guarded initialization is
+   an additional production requirement that this example does **not**
+   demonstrate: its implementations expose only unrestricted setters and
+   there is no `initialize` function, so a production proxy must add a
+   one-time `initializer`-guarded `initialize`.
 
 ### Additional defenses
 

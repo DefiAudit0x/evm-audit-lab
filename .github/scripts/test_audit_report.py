@@ -8,18 +8,106 @@ import audit_report as a
 from check_slither import ACCEPTED
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_DEFAULT_ALLOWLIST = [
-    {
-        "path": path,
-        "check": check,
-        "lines": lines,
-        "reason": entry.reason,
-        "owner": entry.owner,
-        "expires": entry.expires.isoformat(),
-        "anchor": entry.anchor,
-    }
-    for (path, check, lines), entry in sorted(ACCEPTED.items())
-]
+# Independent reviewed fixture for the default allowlist (m-21).
+# A literal snapshot of the 11 reviewed ACCEPTED entries: deriving the
+# expectation from ACCEPTED itself let a deleted entry pass silently,
+# because the expectation shrank in lockstep. Update this list only
+# alongside a reviewed triage change in check_slither.py.
+EXPECTED_DEFAULT_ALLOWLIST = [{'anchor': 'accepted-1',
+  'check': 'incorrect-equality',
+  'expires': '2027-05-21',
+  'lines': '36-45',
+  'owner': 'DefiAudit0x',
+  'path': 'src/SafeFotVault.sol',
+  'reason': 'The zero check rejects a zero computed receipt after the balance-delta guard; '
+            'donations increase the credited receipt; see docs/slither-triage.md#accepted-1'},
+ {'anchor': 'accepted-11',
+  'check': 'reentrancy-balance',
+  'expires': '2027-05-21',
+  'lines': '36-45',
+  'owner': 'DefiAudit0x',
+  'path': 'src/SafeFotVault.sol',
+  'reason': '`deposit` is guarded by the shared `nonReentrant` lock, so no callback can re-enter '
+            'while the deposit is in flight; the post-call balance checks (`afterBalance < '
+            'beforeBalance`, `received == 0`) only ever revert (fail-closed) and the credit is the '
+            'measured `afterBalance - beforeBalance`; see docs/slither-triage.md#accepted-11'},
+ {'anchor': 'accepted-2',
+  'check': 'reentrancy-balance',
+  'expires': '2027-05-21',
+  'lines': '47-58',
+  'owner': 'DefiAudit0x',
+  'path': 'src/SafeFotVault.sol',
+  'reason': 'The shared lock blocks callbacks, state updates precede transfer, and balance '
+            'mismatches revert; see docs/slither-triage.md#accepted-2'},
+ {'anchor': 'accepted-3',
+  'check': 'divide-before-multiply',
+  'expires': '2027-05-21',
+  'lines': '65-74',
+  'owner': 'DefiAudit0x',
+  'path': 'src/SafeLending.sol',
+  'reason': 'Downward rounding at both steps makes the borrow limit conservative and cannot enable '
+            'over-borrowing; see docs/slither-triage.md#accepted-3'},
+ {'anchor': 'accepted-5',
+  'check': 'unused-return',
+  'expires': '2027-05-21',
+  'lines': '108-123',
+  'owner': 'DefiAudit0x',
+  'path': 'src/SafeLending.sol',
+  'reason': 'Sequencer status and grace time are checked while primary-feed round completeness is '
+            'validated; see docs/slither-triage.md#accepted-5'},
+ {'anchor': 'accepted-13',
+  'check': 'unused-return',
+  'expires': '2027-05-21',
+  'lines': '76-90',
+  'owner': 'DefiAudit0x',
+  'path': 'src/SafeLending.sol',
+  'reason': 'Base `_validatedPrice` ignores only the third return value (`startedAt`) of '
+            '`oracle.latestRoundData()`; freshness is established via `updatedAt` (nonzero, not '
+            'future, within the staleness window) and round completeness via `answeredInRound >= '
+            'roundId`, so `startedAt` adds nothing for the primary feed; see '
+            'docs/slither-triage.md#accepted-13'},
+ {'anchor': 'accepted-7',
+  'check': 'incorrect-equality',
+  'expires': '2027-05-21',
+  'lines': '57-75',
+  'owner': 'DefiAudit0x',
+  'path': 'src/SafeSwap.sol',
+  'reason': 'Observation maintenance bounds the count to one or two, making equality to two '
+            'sufficient; see docs/slither-triage.md#accepted-7'},
+ {'anchor': 'accepted-8',
+  'check': 'controlled-delegatecall',
+  'expires': '2027-05-21',
+  'lines': '52-71',
+  'owner': 'DefiAudit0x',
+  'path': 'src/SafeUupsVault.sol',
+  'reason': 'UUPS upgrade calls require proxy context, owner authorization, and UUID '
+            'compatibility; see docs/slither-triage.md#accepted-8'},
+ {'anchor': 'accepted-9',
+  'check': 'incorrect-equality',
+  'expires': '2027-05-21',
+  'lines': '49-64',
+  'owner': 'DefiAudit0x',
+  'path': 'src/SafeVault4626.sol',
+  'reason': 'Deposits revert unless measured receipts match requested assets, preserving the '
+            'exact-transfer assumption; see docs/slither-triage.md#accepted-9'},
+ {'anchor': 'accepted-12',
+  'check': 'reentrancy-balance',
+  'expires': '2027-05-21',
+  'lines': '49-64',
+  'owner': 'DefiAudit0x',
+  'path': 'src/SafeVault4626.sol',
+  'reason': '`deposit` is guarded by the shared `nonReentrant` lock; shares mint only from the '
+            'measured receipt after `transferFrom` settles, and the post-call checks (`assetsAfter '
+            '< assetsBefore`, `received == assets`, `minted > 0`) only ever revert; see '
+            'docs/slither-triage.md#accepted-12'},
+ {'anchor': 'accepted-10',
+  'check': 'reentrancy-balance',
+  'expires': '2027-05-21',
+  'lines': '66-84',
+  'owner': 'DefiAudit0x',
+  'path': 'src/SafeVault4626.sol',
+  'reason': 'The shared lock blocks callbacks, shares burn before transfer, and balance mismatches '
+            'revert; see docs/slither-triage.md#accepted-10'}]
 
 
 def detector(
@@ -109,6 +197,17 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(len(result["required_detections"]), 7)
         self.assertEqual(result["allowed_on_safe"], EXPECTED_DEFAULT_ALLOWLIST)
 
+    def test_defaults_reject_a_deleted_allowlist_entry(self):
+        # m-21 mutation check: the expectation is an independent fixture,
+        # so deleting an entry from ACCEPTED must fail validation instead
+        # of shrinking the expectation in lockstep.
+        reduced = dict(ACCEPTED)
+        reduced.pop(("src/SafeSwap.sol", "incorrect-equality", "57-75"))
+        with patch.object(a, "ACCEPTED", reduced):
+            result = a.load_policy(None, ROOT)
+        self.assertEqual(len(result["allowed_on_safe"]), len(EXPECTED_DEFAULT_ALLOWLIST) - 1)
+        self.assertNotEqual(result["allowed_on_safe"], EXPECTED_DEFAULT_ALLOWLIST)
+
     def test_research_metadata_exports(self):
         key = "src/SafeA.sol:SafeA"
         counterexample = {"Single": {"args": [1]}}
@@ -161,13 +260,27 @@ class AuditTests(unittest.TestCase):
         research = self.research("artifact-revision", True)
         self.assertEqual(research["source_revision"], "artifact-revision")
         self.assertIs(research["source_dirty"], True)
-        self.assertEqual(research["source_revision_origin"], "provided")
+        self.assertEqual(research["source_revision_origin"], "provided-unverified")
+        self.assertEqual(research["inputs_provenance"], "caller-supplied, unverified")
 
     def test_absent_provenance_uses_exporter_checkout(self):
         research = self.research()
         self.assertEqual(research["source_revision"], "checkout-rev")
         self.assertIs(research["source_dirty"], False)
         self.assertEqual(research["source_revision_origin"], "exporter-checkout")
+        # The revision comes from the exporter's own checkout, but the
+        # build/test inputs are still caller-supplied paths.
+        self.assertEqual(research["inputs_provenance"], "caller-supplied, unverified")
+
+    def test_unrelated_inputs_carry_unverified_provenance(self):
+        # m-23: a scratch export with unrelated build/test inputs labelled
+        # with a supplied revision must carry the unverified label, and
+        # the exporter must no longer claim a single checkout and run.
+        research = self.research("deadbeef-supplied-rev", True)
+        self.assertEqual(research["source_revision"], "deadbeef-supplied-rev")
+        self.assertEqual(research["source_revision_origin"], "provided-unverified")
+        self.assertEqual(research["inputs_provenance"], "caller-supplied, unverified")
+        self.assertNotIn("same checkout and run", a.collect_research.__doc__)
 
     def test_url_markdown_anchor_uses_structured_source_mapping(self):
         item = detector("src/VulnerableVault.sol")
@@ -175,6 +288,27 @@ class AuditTests(unittest.TestCase):
         findings = a.parse_findings(raw(item), ROOT)
         self.assertEqual(findings[0]["locations"][0]["path"], "src/VulnerableVault.sol")
         self.assertEqual(findings[0]["locations"][0]["start_line"], 5)
+
+    def test_markdown_anchor_cannot_satisfy_required_detection(self):
+        # m-22: the structured mapping names SafeRouter while the Markdown
+        # anchor names VulnerableVault. The anchor is display-only, so the
+        # required reentrancy-eth detection on VulnerableVault must fail
+        # and the finding's primary location stays the structured one.
+        item = detector("src/SafeRouter.sol", "reentrancy-eth", "High")
+        item["first_markdown_element"] = "src/VulnerableVault.sol#L5-L6"
+        result = self.build(raw(item), a.load_policy(None, ROOT))
+        self.assertEqual(result["status"], "failed")
+        gates = [
+            gate
+            for gate in result["gates"]
+            if gate["kind"] == "required-detection"
+            and gate["path"] == "src/VulnerableVault.sol"
+        ]
+        self.assertEqual(len(gates), 1)
+        self.assertEqual(gates[0]["status"], "failed")
+        finding = result["findings"][0]
+        self.assertEqual(finding["locations"][0]["path"], "src/SafeRouter.sol")
+        self.assertEqual(finding["markdown_anchor"], "src/VulnerableVault.sol#L5-L6")
 
     def test_partial_config_preserves_defaults(self):
         result = self.config(

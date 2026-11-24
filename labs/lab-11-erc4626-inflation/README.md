@@ -27,7 +27,7 @@ function convertToShares(uint256 assets) public view returns (uint256) {
 ```
 attacker.deposit(1 wei)                -> 1 share (totalShares == 0 path)
 attacker donates 100_000e18 tokens     -> price inflated, no shares minted
-victim.deposit(100_000e18)             -> (100_000e18 * 1) / (200_000e18) = 0 shares
+victim.deposit(100_000e18)             -> (100_000e18 * 1) / (100_000e18 + 1) = 0 shares
 attacker.withdraw(1)                   -> redeems essentially the whole vault
 ```
 

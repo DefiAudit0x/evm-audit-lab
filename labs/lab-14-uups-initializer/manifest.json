@@ -7,7 +7,7 @@
     "The vulnerable initializer permits unconditional ownership reassignment even after legitimate initialization.",
     "The remediated path initializes atomically with deployment and locks the implementation instance."
   ],
-  "invariant": "Privileged proxy state is established once by the intended deployer as part of deployment, and only a compatible authorized implementation can replace it.",
+  "invariant": "Privileged proxy state is established once by the intended deployer as part of deployment, and only an authorized implementation advertising the expected UUID can replace it. The UUID check verifies identity, not storage-layout or behavioral compatibility; layout compatibility needs separate validation.",
   "contracts": {
     "vulnerable": {
       "role": "vulnerable",
@@ -37,6 +37,10 @@
     },
     {
       "name": "testOwnerCannotUpgradeToIncompatibleTargets",
+      "path": "labs/lab-14-uups-initializer/test/UupsTakeover.t.sol"
+    },
+    {
+      "name": "testOwnerUpgradeAcceptsUuidOnlyTargetDespiteLayoutMismatch",
       "path": "labs/lab-14-uups-initializer/test/UupsTakeover.t.sol"
     }
   ],

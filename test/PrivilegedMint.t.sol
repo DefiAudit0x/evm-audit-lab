@@ -75,6 +75,54 @@ contract PrivilegedMintTest is Test {
         assertEq(attacker.balance, RESERVE, "attacker stole the whole reserve for free");
     }
 
+    /// @notice Regression (m-14): the drain leaves honest holders behind.
+    ///         The honest holder mints first; the attacker then mints and
+    ///         redeems the full reserve while the honest balance remains
+    ///         outstanding — and unbacked.
+    function testVulnerableMintLeavesHonestHoldersUnbacked() public {
+        address honest = makeAddr("honest");
+
+        // Initial honest issuance: 2 tokens backed by the 5 ETH reserve.
+        vm.prank(honest);
+        vulnerable.mint(honest, 2 ether);
+        assertEq(vulnerable.balanceOf(honest), 2 ether, "honest issuance must exist first");
+
+        // Attacker mints and redeems the entire reserve.
+        vm.prank(attacker);
+        vulnerable.mint(attacker, RESERVE);
+        vm.prank(attacker);
+        vulnerable.redeem(RESERVE);
+
+        assertEq(address(vulnerable).balance, 0, "reserve drained");
+        assertEq(vulnerable.totalSupply(), 2 ether, "honest balance remains outstanding");
+        assertEq(vulnerable.balanceOf(honest), 2 ether, "honest holder still holds claims");
+
+        // The honest balance is now unbacked: redemption fails with no ETH
+        // left, and the failed redemption leaves the claim outstanding.
+        vm.prank(honest);
+        vm.expectRevert("transfer failed");
+        vulnerable.redeem(2 ether);
+        assertEq(vulnerable.balanceOf(honest), 2 ether, "failed redemption keeps the claim");
+        assertEq(vulnerable.totalSupply(), 2 ether, "failed redemption keeps the supply");
+    }
+
+    /// @notice Regression (m-13): one wei backs each raw supply unit —
+    ///         minting and redeeming 1 moves exactly one wei.
+    function testSafeMintOneWeiBacksOneSupplyUnit() public {
+        vm.prank(teamMinter);
+        safe.mint(teamMinter, 1);
+        assertEq(safe.balanceOf(teamMinter), 1, "one raw supply unit minted");
+        assertEq(safe.totalSupply(), 1, "one unit of supply outstanding");
+
+        uint256 before = teamMinter.balance;
+        vm.prank(teamMinter);
+        safe.redeem(1);
+
+        assertEq(teamMinter.balance, before + 1, "redeeming 1 unit pays exactly one wei");
+        assertEq(safe.totalSupply(), 0, "supply returns to zero");
+        assertEq(address(safe).balance, RESERVE - 1, "reserve reduced by exactly one wei");
+    }
+
     function testSafeMintRequiresMinterRole() public {
         vm.expectRevert(SafeMint.NotMinter.selector);
         vm.prank(attacker);
@@ -97,6 +145,29 @@ contract PrivilegedMintTest is Test {
         safe.mint(teamMinter, 1 ether);
 
         assertEq(safe.balanceOf(teamMinter), 1 ether, "authorized mint succeeded");
+
+        // A fresh, initially unauthorized recipient cannot mint until the
+        // admin grants the role — this is not the setUp grant repeated.
+        address freshRecipient = makeAddr("freshRecipient");
+        assertFalse(safe.isMinter(freshRecipient), "fresh recipient starts unauthorized");
+        vm.expectRevert(SafeMint.NotMinter.selector);
+        vm.prank(freshRecipient);
+        safe.mint(freshRecipient, 1 ether);
+
+        vm.prank(admin);
+        safe.setMinter(freshRecipient, true);
+        vm.prank(freshRecipient);
+        safe.mint(freshRecipient, 1 ether);
+        assertEq(safe.balanceOf(freshRecipient), 1 ether, "fresh grant enables minting");
+
+        // Revoking the role takes the privilege away again.
+        vm.prank(admin);
+        safe.setMinter(teamMinter, false);
+        assertFalse(safe.isMinter(teamMinter), "revoked minter loses the role");
+        vm.expectRevert(SafeMint.NotMinter.selector);
+        vm.prank(teamMinter);
+        safe.mint(teamMinter, 1 ether);
+        assertEq(safe.balanceOf(teamMinter), 1 ether, "revoked minter mints nothing more");
     }
 
     function testSafeMintEnforcesCap() public {
@@ -121,6 +192,46 @@ contract PrivilegedMintTest is Test {
 
         assertEq(teamMinter.balance, before + 1 ether, "redeem pays 1:1");
         assertEq(address(safe).balance, RESERVE - 1 ether, "reserve reduced exactly by the redemption");
+    }
+
+    function testSafeMintReentrantRecipientCannotDoubleRedeem() public {
+        ReentrantRedeemer redeemer = new ReentrantRedeemer(safe);
+        vm.prank(teamMinter);
+        safe.mint(address(redeemer), 1 ether);
+
+        redeemer.redeem(1 ether);
+
+        // The nested redeem inside the receive hook failed: state was
+        // already deducted before the ETH left, so the second attempt
+        // found no balance.
+        assertTrue(redeemer.nestedAttempted(), "nested redeem must have been attempted");
+        assertFalse(redeemer.nestedSucceeded(), "nested redeem must fail");
+        assertEq(address(redeemer).balance, 1 ether, "exactly one payout");
+        assertEq(safe.balanceOf(address(redeemer)), 0, "redeemer balance fully deducted");
+        assertEq(safe.totalSupply(), 0, "supply reduced by the single redemption");
+        assertEq(safe.totalMinted(), 1 ether, "lifetime issuance is not recycled by redeeming");
+        assertEq(address(safe).balance, RESERVE - 1 ether, "backing reduced exactly by the redemption");
+        assertGe(address(safe).balance, safe.totalSupply(), "backing remains sufficient");
+    }
+
+    function testSafeMintRejectingRecipientRollsBackRedemption() public {
+        RejectingRedeemer rejecter = new RejectingRedeemer(safe);
+        vm.prank(teamMinter);
+        safe.mint(address(rejecter), 1 ether);
+
+        uint256 supplyBefore = safe.totalSupply();
+        uint256 mintedBefore = safe.totalMinted();
+
+        vm.expectRevert(bytes("transfer failed"));
+        rejecter.redeem(1 ether);
+
+        // The failed transfer reverts the whole redemption: balances,
+        // supply, and lifetime issuance are exactly as before.
+        assertEq(safe.balanceOf(address(rejecter)), 1 ether, "redeemer balance rolled back");
+        assertEq(safe.totalSupply(), supplyBefore, "supply rolled back");
+        assertEq(safe.totalMinted(), mintedBefore, "lifetime issuance rolled back");
+        assertEq(address(safe).balance, RESERVE, "reserve untouched");
+        assertEq(address(rejecter).balance, 0, "rejecting recipient received nothing");
     }
 
     function testSafeMintRejectsUnbackedSupply() public {
@@ -177,5 +288,48 @@ contract PrivilegedMintTest is Test {
         assertEq(safe.totalSupply(), 1 ether);
         assertEq(safe.totalMinted(), 1 ether);
         assertEq(safe.balanceOf(teamMinter), 1 ether);
+    }
+}
+
+/// @dev Recipient that tries to redeem again from inside its receive hook,
+///      while the outer redemption is still in flight. It attempts the
+///      nested redeem only once: repeated attempts would recurse until the
+///      vault is empty and mask the single-reentry effect this test pins down.
+contract ReentrantRedeemer {
+    SafeMint internal immutable vault;
+    bool public nestedAttempted;
+    bool public nestedSucceeded;
+    bool private nestedDone;
+
+    constructor(SafeMint vault_) {
+        vault = vault_;
+    }
+
+    function redeem(uint256 amount) external {
+        vault.redeem(amount);
+    }
+
+    receive() external payable {
+        if (nestedDone) return;
+        nestedDone = true;
+        nestedAttempted = true;
+        (nestedSucceeded,) = address(vault).call(abi.encodeCall(SafeMint.redeem, (1 ether)));
+    }
+}
+
+/// @dev Recipient that refuses every ETH transfer.
+contract RejectingRedeemer {
+    SafeMint internal immutable vault;
+
+    constructor(SafeMint vault_) {
+        vault = vault_;
+    }
+
+    function redeem(uint256 amount) external {
+        vault.redeem(amount);
+    }
+
+    receive() external payable {
+        revert("payment refused");
     }
 }

@@ -84,6 +84,43 @@ contract InflationAttackTest is Test {
         assertEq(token.balanceOf(address(vulnerable)), 0, "vault emptied");
     }
 
+    /// @notice Regression (m-16): at the conversion point the vault prices
+    ///         shares against the balance it holds BEFORE receiving the
+    ///         victim's deposit — the donation plus the 1-wei seed, i.e.
+    ///         100_000e18 + 1 — not the post-deposit 200_000e18.
+    function testVulnerablePricingBalanceIsPreDepositDonationPlusSeed() public {
+        MockToken token = new MockToken();
+        vulnerable = new VulnerableVault4626(address(token));
+        deal(address(token), attacker, 1 wei + DONATION);
+        deal(address(token), victim, VICTIM_DEPOSIT);
+
+        // 1. Attacker seeds 1 wei for 1 share.
+        vm.startPrank(attacker);
+        token.approve(address(vulnerable), 1 wei);
+        uint256 minted = vulnerable.deposit(1 wei);
+        assertEq(minted, 1, "attacker should hold exactly 1 share");
+
+        // 2. Donation inflates the price with no shares minted.
+        token.transfer(address(vulnerable), DONATION);
+        vm.stopPrank();
+
+        // 3. The pricing balance at the conversion point is pre-deposit.
+        assertEq(token.balanceOf(address(vulnerable)), DONATION + 1, "pricing balance is donation plus seed");
+        assertEq(vulnerable.totalShares(), 1, "only the attacker's seed share exists");
+        assertEq(
+            vulnerable.convertToShares(150_000e18),
+            1,
+            "a 150_000e18 conversion prices to 1 share against the pre-deposit denominator (it would round to 0 against the README's 200_000e18 or the post-deposit 200_000e18 + 1)"
+        );
+        assertEq(vulnerable.convertToShares(VICTIM_DEPOSIT), 0, "victim deposit rounds to zero");
+
+        vm.startPrank(victim);
+        token.approve(address(vulnerable), VICTIM_DEPOSIT);
+        uint256 victimShares = vulnerable.deposit(VICTIM_DEPOSIT);
+        assertEq(victimShares, 0, "victim shares must round to zero on the vulnerable vault");
+        vm.stopPrank();
+    }
+
     function testSafeVaultAbsorbsTheDonation() public {
         MockToken token = new MockToken();
         safe = new SafeVault4626(address(token));
@@ -155,6 +192,75 @@ contract InflationAttackTest is Test {
         assertEq(safe.totalShares(), 0);
         assertEq(safe.shares(depositor), 0);
         assertEq(token.balanceOf(address(safe)), 0, "rejected taxed receipt rolls back");
+    }
+
+    function testSafeVaultWithdrawRejectsFalseReturningTransfer() public {
+        FalseReturnWithdrawToken token = new FalseReturnWithdrawToken();
+        safe = new SafeVault4626(address(token));
+        deal(address(token), victim, 100 ether);
+
+        vm.startPrank(victim);
+        token.approve(address(safe), 100 ether);
+        uint256 minted = safe.deposit(100 ether);
+        vm.stopPrank();
+
+        // The withdrawal transfer reports failure without reverting.
+        vm.prank(victim);
+        vm.expectRevert(SafeVault4626.TransferFailed.selector);
+        safe.withdraw(minted);
+
+        assertEq(safe.shares(victim), minted, "failed withdrawal keeps the shares");
+        assertEq(safe.totalShares(), minted, "failed withdrawal keeps total shares");
+        assertEq(token.balanceOf(address(safe)), 100 ether, "vault balance untouched");
+        assertEq(token.balanceOf(victim), 0, "victim received nothing");
+    }
+
+    function testSafeVaultWithdrawRejectsRecipientFeeToken() public {
+        TransferFeeToken token = new TransferFeeToken(1_000);
+        safe = new SafeVault4626(address(token));
+        deal(address(token), victim, 100 ether);
+
+        vm.startPrank(victim);
+        token.approve(address(safe), 100 ether);
+        uint256 minted = safe.deposit(100 ether);
+        vm.stopPrank();
+
+        // Deposits are exact, but the withdrawal transfer taxes the
+        // recipient: fewer tokens arrive than the vault debited.
+        vm.prank(victim);
+        vm.expectRevert(SafeVault4626.UnsupportedTokenBehavior.selector);
+        safe.withdraw(minted);
+
+        assertEq(safe.shares(victim), minted, "failed withdrawal keeps the shares");
+        assertEq(safe.totalShares(), minted, "failed withdrawal keeps total shares");
+        assertEq(token.balanceOf(address(safe)), 100 ether, "vault balance untouched");
+        assertEq(token.balanceOf(victim), 0, "victim received nothing");
+    }
+
+    function testSafeVaultWithdrawRejectsExcessVaultDebit() public {
+        ExcessDebitToken token = new ExcessDebitToken(1 ether);
+        safe = new SafeVault4626(address(token));
+        deal(address(token), victim, 100 ether);
+
+        vm.startPrank(victim);
+        token.approve(address(safe), 100 ether);
+        uint256 minted = safe.deposit(100 ether);
+        vm.stopPrank();
+
+        // Top the vault up so the excess debit itself succeeds and the
+        // vault's own balance check is what rejects the withdrawal.
+        deal(address(token), address(safe), 200 ether);
+
+        // The withdrawal transfer debits the vault by more than the
+        // recipient receives, so the vault's balance check fails.
+        vm.prank(victim);
+        vm.expectRevert(SafeVault4626.UnsupportedTokenBehavior.selector);
+        safe.withdraw(minted);
+
+        assertEq(safe.shares(victim), minted, "failed withdrawal keeps the shares");
+        assertEq(safe.totalShares(), minted, "failed withdrawal keeps total shares");
+        assertEq(token.balanceOf(address(safe)), 200 ether, "vault balance untouched by the revert");
+        assertEq(token.balanceOf(victim), 0, "victim received nothing");
     }
 
     function testSafeVaultBlocksNestedDepositAndWithdrawalCallbacks() public {
@@ -250,5 +356,95 @@ contract TaxedMockToken {
         uint256 fee = (amount * feeBps) / 10_000;
         balanceOf[from] -= amount;
         balanceOf[to] += amount - fee;
+    }
+}
+
+/// @dev Token whose transferFrom is exact but whose transfer reports
+///      failure without moving tokens (USDT-style false return).
+contract FalseReturnWithdrawToken {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transfer(address, uint256) external pure returns (bool) {
+        return false;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        uint256 allowed = allowance[from][msg.sender];
+        require(allowed >= amount, "insufficient allowance");
+        allowance[from][msg.sender] = allowed - amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+}
+
+/// @dev Token with exact transferFrom but a fee on plain transfers: the
+///      recipient receives less than the sender was debited.
+contract TransferFeeToken {
+    uint256 public immutable feeBps;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    constructor(uint256 feeBps_) {
+        feeBps = feeBps_;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        uint256 fee = (amount * feeBps) / 10_000;
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount - fee;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        uint256 allowed = allowance[from][msg.sender];
+        require(allowed >= amount, "insufficient allowance");
+        allowance[from][msg.sender] = allowed - amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+}
+
+/// @dev Token with exact transferFrom but a transfer that debits the sender
+///      by more than the recipient receives.
+contract ExcessDebitToken {
+    uint256 public immutable extraDebit;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    constructor(uint256 extraDebit_) {
+        extraDebit = extraDebit_;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        balanceOf[msg.sender] -= amount + extraDebit;
+        balanceOf[to] += amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        uint256 allowed = allowance[from][msg.sender];
+        require(allowed >= amount, "insufficient allowance");
+        allowance[from][msg.sender] = allowed - amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
     }
 }

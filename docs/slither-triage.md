@@ -26,11 +26,13 @@ time-bounded with owner and evidence.
 | `SafeUupsVault` / `controlled-delegatecall` | Removed. Owner gating alone does not prove an upgrade target safe, so the detector remains visible. |
 
 Slither 0.11.6 ran a real scan and produced 115 detector results. The sanitized
-baseline report is committed at
+pre-fix baseline report is committed at
 [`docs/slither-baseline-2026-11-21.json`](slither-baseline-2026-11-21.json),
 so maintainers can retrieve and re-run the triage without a machine-specific
 home-directory path. Fix 36 (2026-11-21) resolved the two
-`locked-ether` findings; the re-scan produced 117 detector results.
+`locked-ether` findings; the re-scan produced 117 detector results,
+committed at
+[`docs/slither-rescan-2026-11-24.json`](slither-rescan-2026-11-24.json).
 
 ## Resolved findings
 

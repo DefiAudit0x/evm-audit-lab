@@ -21,7 +21,9 @@ claimed[msg.sender] = amount;         // records a payment that may not have hap
 delete claimable[msg.sender];         // destroys the entitlement either way
 ```
 
-A token that returns `false` (paused, blacklisted recipient, frozen funds) does not revert here. The router's state now claims the user was paid while the tokens never left the contract — and because the entitlement was deleted, the user can never retry.
+A token that returns `false` (paused, blacklisted recipient, frozen funds) does not revert here. The router's state now claims the user was paid while the tokens never left the contract — and because the entitlement was deleted, the user cannot retry unless the entitlement is explicitly restored.
+
+This example router exposes an unrestricted `setClaimable` lab helper, so the entitlement *can* be restored here; the "no retry / tokens stuck" outcome below is the illustrative production impact for a router without such a helper.
 
 ## Attack anatomy (phantom payout, destroyed entitlement)
 
@@ -31,10 +33,10 @@ claimant holds a 100e18 allocation on a USDT-style token (paused)
 claimant.claim()
   router: token.transfer(claimant, 100e18)  -> returns false (ignored!)
   router: claimed[claimant] = 100e18        -> accounting says "paid"
-  router: delete claimable[claimant]        -> retry impossible
+  router: delete claimable[claimant]        -> retry impossible unless the allocation is explicitly restored
 
 claimant.balanceOf: 0        <- received nothing
-router token balance: 100e18 <- tokens stuck forever
+router token balance: 100e18 <- tokens stuck unless the entitlement is explicitly restored
 claimed[claimant]: 100e18    <- the state is now a lie
 ```
 
@@ -54,7 +56,7 @@ forge test --match-contract UncheckedReturnTest --match-test testVulnerableRoute
 
 | Severity | Conditions | Outcome |
 | --- | --- | --- |
-| **High** | Router records entitlements as paid without checking the `transfer`/`call` return value, and any supported token can signal failure by returning `false` | Users' allocations are permanently destroyed while tokens remain stuck in the contract; accounting and reality diverge silently |
+| **High** | Router records entitlements as paid without checking the `transfer`/`call` return value, and any supported token can signal failure by returning `false` | Users' allocations are erased — recoverable only if explicitly restored — while tokens remain stuck in the contract; accounting and reality diverge silently |
 
 ## Remediation
 

@@ -100,6 +100,29 @@ contract UupsTakeoverTest is Test {
         assertEq(vm.load(address(proxy), IMPLEMENTATION_SLOT), bytes32(uint256(uint160(address(third)))));
     }
 
+    function testOwnerUpgradeAcceptsUuidOnlyTargetDespiteLayoutMismatch() public {
+        (Erc1967Proxy proxy, SafeUupsVault vault) = _deployVault();
+        UuidOnlyTarget target = new UuidOnlyTarget();
+
+        // The target advertises the expected UUID but lays its storage out
+        // differently (slot 0 is `junk`, not `owner`), so it is NOT layout
+        // compatible with SafeUupsVault — yet the UUID check passes.
+        assertEq(target.proxiableUUID(), IMPLEMENTATION_SLOT);
+
+        vm.prank(deployer);
+        vault.upgradeToAndCall(address(target), "");
+
+        assertEq(vm.load(address(proxy), IMPLEMENTATION_SLOT), bytes32(uint256(uint160(address(target)))));
+
+        // Slot 0 still holds the old owner address (low 160 bits) packed
+        // with the `initialized` flag (bit 160), now reinterpreted as the
+        // target's `junk` — proof the layouts disagree while the upgrade
+        // went through on UUID identity alone.
+        uint256 junk = UuidOnlyTarget(payable(address(proxy))).junk();
+        assertEq(address(uint160(junk)), deployer, "slot 0 still holds the old owner");
+        assertEq(junk >> 160, 1, "slot 0 still holds the initialized flag");
+    }
+
     function testOwnerCannotUpgradeToIncompatibleTargets() public {
         (Erc1967Proxy proxy, SafeUupsVault vault) = _deployVault();
         bytes32 original = vm.load(address(proxy), IMPLEMENTATION_SLOT);
@@ -218,3 +241,13 @@ contract WrongUuid {
 }
 
 contract MissingUuid {}
+
+/// @dev UUID-only target: advertises the expected UUID but uses a different
+///      storage layout (slot 0 is `junk`, not `owner`).
+contract UuidOnlyTarget {
+    uint256 public junk;
+
+    function proxiableUUID() external pure returns (bytes32) {
+        return 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+    }
+}

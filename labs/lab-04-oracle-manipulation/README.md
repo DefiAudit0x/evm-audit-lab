@@ -50,7 +50,7 @@ The test:
 
 [`SafeLending.sol`](../../src/SafeLending.sol) is an educational debt-accounting
 model. It requires a positive price, a nonzero `updatedAt` timestamp that is
-not in the future and is less than one hour old, and a price above a fixed
+not in the future and is less than one hour old, and a price at or above a fixed
 minimum. It also requires the ETH deposit to match the credited collateral
 and caps cumulative debt. It does not transfer a loan asset.
 

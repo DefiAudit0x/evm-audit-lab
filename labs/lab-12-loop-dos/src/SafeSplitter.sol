@@ -4,7 +4,9 @@ pragma solidity ^0.8.24;
 /// @title SafeSplitter
 /// @notice Lab 12 — Remediates recipient-blocked payouts with pull payments.
 /// @dev Batches only account for ETH; each payee claims independently. This
-///      assumes payees can receive ETH within 30,000 gas or use withdrawTo.
+///      assumes payees can receive ETH with 30,000 gas of requested call gas
+///      — the EVM adds the 2,300-gas value-transfer stipend on top, so a
+///      recipient observes over 32,000 gas on entry — or use withdrawTo.
 contract SafeSplitter {
     address[] public payees;
     mapping(address => uint256) public pending;

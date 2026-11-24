@@ -28,12 +28,12 @@ import {SafeLending, ConfiguredSafeLending, LendingFeed, LendingTwap} from "../s
 ///   2. User deposits 1 ETH. Collateral value = $2,000.
 ///   3. Oracle goes stale: the price is frozen at $2,000 even though
 ///      the real market price has crashed to $500.
-///   4. Attacker deposits 0.25 ETH, but the protocol credits them
-///      with $500 of collateral value at the stale $2,000 price.
-///      Wait — at the stale price, 0.25 ETH = $500, so the attacker
-///      can borrow $375 (75% LTV). If the real price is $500, then
-///      the attacker's collateral is only worth $125. The recorded
-///      debt exceeds that assumed value by $250; no loan asset is paid
+///   4. Attacker deposits 1 ETH, but the protocol credits them
+///      with $2,000 of collateral value at the stale $2,000 price.
+///      At the stale price, 1 ETH = $2,000, so the attacker
+///      can borrow $1,500 (75% LTV). If the real price is $500, then
+///      the attacker's collateral is only worth $500. The recorded
+///      debt exceeds that assumed value by $1,000; no loan asset is paid
 ///      out and no realized profit is demonstrated.
 ///
 /// Remediation:
@@ -280,6 +280,34 @@ contract StaleOracleTest is Test {
         vm.prank(attacker);
         safe.borrow(1_650 ether);
         assertEq(safe.debt(attacker), 1_650 ether);
+    }
+
+    /// @notice The scaling-overflow boundary: a 0-decimal feed whose price
+    ///         would overflow when scaled to 18 decimals is rejected.
+    function testSafeOracleRejectsScalingOverflow() public {
+        _depositSafe();
+        // 0 decimals -> scale 1e18; price = int256 max exceeds
+        // type(uint256).max / 1e18, so normalizing it would overflow.
+        vm.mockCall(address(oracle), abi.encodeCall(LendingFeed.decimals, ()), abi.encode(uint8(0)));
+        oracle.setStale(uint256(type(int256).max), block.timestamp);
+
+        vm.prank(attacker);
+        vm.expectRevert("price overflow");
+        safe.borrow(1 ether);
+        assertEq(safe.debt(attacker), 0, "no debt should accrue");
+    }
+
+    /// @notice The exact minimum price is accepted: MIN_PRICE (1e14) at
+    ///         18 decimals is "at or above" the minimum, and borrowing
+    ///         against it records positive debt.
+    function testSafeOracleAcceptsExactMinimumPrice() public {
+        _depositSafe();
+        oracle.setStale(safe.MIN_PRICE(), block.timestamp);
+
+        vm.prank(attacker);
+        safe.borrow(1e13);
+        assertGt(safe.debt(attacker), 0, "exact minimum price must record positive debt");
+        assertEq(safe.debt(attacker), 1e13, "borrowed amount must be recorded");
     }
 
     function testSafeOracleStalenessBoundary() public {

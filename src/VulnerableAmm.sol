@@ -7,7 +7,8 @@ import {IERC20} from "./shared/IERC20.sol";
 /// @notice Lab 06 — Intentionally vulnerable educational example.
 /// @dev DO NOT DEPLOY. `swap()` executes at whatever price is live at the
 ///      moment of execution and accepts no slippage bound or deadline, so
-///      any transaction can be sandwiched for profit.
+///      swaps may be profitably sandwiched depending on reserves, trade
+///      sizes, and fees.
 contract VulnerableAmm {
     uint256 public constant FEE_NUMERATOR = 997;
     uint256 public constant FEE_DENOMINATOR = 1000;

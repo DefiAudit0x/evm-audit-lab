@@ -10,6 +10,9 @@ pragma solidity ^0.8.24;
 ///      upgrade to an arbitrary implementation, so rescue adds no new trust
 ///      assumption. The proxy's own functions take precedence over fallback
 ///      dispatch to the implementation.
+///      This example has no initializer: a one-time `initializer`-guarded
+///      `initialize` is an additional production requirement, not a fix
+///      demonstrated here.
 contract SafeProxy {
     event EthRescued(address indexed to, uint256 amount);
 

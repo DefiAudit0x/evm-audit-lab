@@ -84,11 +84,19 @@ contract FlashLoanTest is Test {
         // No time elapses at the manipulated price in this block.
         safe.swap(MANIP_AMOUNT);
 
+        // The manipulation must actually move the reserves (m-02): without
+        // the reserve update this regression would pass on an
+        // unmanipulated pool.
+        assertEq(safe.reserveA(), INITIAL_A + MANIP_AMOUNT, "manipulation did not move reserve A");
+        assertEq(safe.reserveB(), 99.009900990099009901 ether, "manipulation did not move reserve B");
+
         uint256 twapAfter = safe.getTWAP();
         // The manipulated spot contributes zero elapsed-time weight.
         assertEq(twapAfter, twapBefore, "same-block swap changed TWAP");
 
         uint256 newSpot = safe.reserveB() * 1e18 / safe.reserveA();
+        // The manipulated spot must actually collapse against the TWAP.
+        assertLt(newSpot, twapBefore / 10, "manipulated spot did not move vs the TWAP");
         vm.warp(start + period + 1);
         assertEq(safe.getTWAP(), (twapBefore * period + newSpot) / (period + 1), "wrong time weights");
 
@@ -107,5 +115,109 @@ contract FlashLoanTest is Test {
         safe.observations(2);
 
         assertEq(safe.getTWAP(), newSpot, "rolling the checkpoints changed TWAP");
+    }
+
+    /// @notice Regression (m-04): the constant product is nondecreasing,
+    ///         not exactly constant — integer rounding can increase it.
+    function testConstantProductIsNondecreasingNotExactlyConstant() public {
+        VulnerableSwap small = new VulnerableSwap(address(0), 3, 10);
+        assertEq(small.reserveA() * small.reserveB(), 30, "product before the swap");
+        small.swap(1);
+        assertEq(small.reserveA(), 4, "reserve A after swap(1) from (3, 10)");
+        assertEq(small.reserveB(), 8, "reserve B after swap(1) from (3, 10)");
+        assertEq(small.reserveA() * small.reserveB(), 32, "rounding increased the product 30 -> 32");
+
+        // The same property holds on the large pool: the product never falls.
+        uint256 productBefore = vulnerable.reserveA() * vulnerable.reserveB();
+        vulnerable.swap(MANIP_AMOUNT);
+        assertGe(vulnerable.reserveA() * vulnerable.reserveB(), productBefore, "product must not decrease");
+    }
+
+    /// @notice Varied timing + multiple swaps: the TWAP is checked against
+    ///         an independent reference computed in this test from the
+    ///         test-side reserve bookkeeping (spot price x elapsed time),
+    ///         not from the contract's own cumulative state.
+    function testTWAPVariedTimingAndMultipleSwaps() public {
+        uint256 start = 10_000;
+        vm.warp(start);
+        safe = new SafeSwap(INITIAL_A, INITIAL_B);
+        uint256 period = safe.PERIOD();
+
+        // Test-side reference bookkeeping (independent of SafeSwap's math).
+        uint256 refA = INITIAL_A;
+        uint256 refB = INITIAL_B;
+        uint256 spot;
+
+        // One full period at the initial spot: TWAP must be exactly 1.0.
+        vm.warp(start + period);
+        assertEq(safe.getTWAP(), 1e18, "baseline TWAP should be 1.0");
+
+        // Swap 1: 1,000 A at start + PERIOD. New spot from the reference.
+        safe.swap(1_000 ether);
+        (refA, refB, spot) = _applySwap(refA, refB, 1_000 ether);
+        assertEq(safe.reserveA(), refA, "reference reserve A after swap 1");
+        assertEq(safe.reserveB(), refB, "reference reserve B after swap 1");
+        uint256 spot1 = spot;
+
+        // Half a period at the moved spot: TWAP = (1.0 * P + spot1 * P/2) / 1.5P.
+        vm.warp(start + period + period / 2);
+        assertEq(
+            safe.getTWAP(),
+            (1e18 * period + spot1 * (period / 2)) / (period + period / 2),
+            "TWAP after varied timing must match the reference"
+        );
+
+        // Swap 2: 5,000 A at start + 2 * PERIOD (a full period at spot1).
+        vm.warp(start + 2 * period);
+        safe.swap(5_000 ether);
+        (refA, refB, spot) = _applySwap(refA, refB, 5_000 ether);
+        assertEq(safe.reserveA(), refA, "reference reserve A after swap 2");
+        assertEq(safe.reserveB(), refB, "reference reserve B after swap 2");
+        uint256 spot2 = spot;
+
+        // A quarter period at the new spot. The window starts at the oldest
+        // checkpoint (start + PERIOD): spot1 for one period, spot2 for P/4.
+        vm.warp(start + 2 * period + period / 4);
+        assertEq(
+            safe.getTWAP(),
+            (spot1 * period + spot2 * (period / 4)) / (period + period / 4),
+            "TWAP after the second swap must match the reference"
+        );
+
+        // Swap 3: 500 A at start + 3 * PERIOD. The checkpoints roll over:
+        // the oldest checkpoint is now start + 2 * PERIOD.
+        vm.warp(start + 3 * period);
+        safe.swap(500 ether);
+        (refA, refB, spot) = _applySwap(refA, refB, 500 ether);
+        assertEq(safe.reserveA(), refA, "reference reserve A after swap 3");
+        assertEq(safe.reserveB(), refB, "reference reserve B after swap 3");
+        uint256 spot3 = spot;
+        (, uint256 oldestTs) = safe.observations(0);
+        (, uint256 newestTs) = safe.observations(1);
+        assertEq(oldestTs, start + 2 * period, "checkpoints must roll over");
+        assertEq(newestTs, start + 3 * period, "newest checkpoint must be the latest swap");
+
+        // Half a period at the newest spot. The window starts at the rolled
+        // checkpoint (start + 2 * PERIOD): spot2 for one period, spot3 for P/2.
+        vm.warp(start + 3 * period + period / 2);
+        assertEq(
+            safe.getTWAP(),
+            (spot2 * period + spot3 * (period / 2)) / (period + period / 2),
+            "TWAP after rollover must match the reference"
+        );
+    }
+
+    /// @notice Reference constant-product step for the TWAP test above:
+    ///         applies a swap to test-side reserves and returns the new
+    ///         reserves and spot price, independently of SafeSwap's state.
+    function _applySwap(uint256 reserveA_, uint256 reserveB_, uint256 amountIn)
+        internal
+        pure
+        returns (uint256 newA, uint256 newB, uint256 spot)
+    {
+        uint256 out = (reserveB_ * amountIn) / (reserveA_ + amountIn);
+        newA = reserveA_ + amountIn;
+        newB = reserveB_ - out;
+        spot = newB * 1e18 / newA;
     }
 }
