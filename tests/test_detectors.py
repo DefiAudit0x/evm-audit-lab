@@ -1625,6 +1625,30 @@ class DetectorMinorTests(unittest.TestCase):
             [("Proxy slot 0 overlaps implementation storage", "high")],
         )
 
+    def test_storage_collision_lowercase_digit_suffixed_name_is_related(self):
+        # Fix 138: `impl2` splits into components `impl` / `2`, so the
+        # `impl` component marks it as a related implementation (high
+        # confidence), not an unverified candidate. The old `[a-z0-9]+`
+        # alternative absorbed the digit into one component (`impl2`).
+        source = """
+        contract Proxy {
+            address admin;
+            address implementation;
+            fallback() external {
+                address impl = implementation;
+                assembly { let result := delegatecall(gas(), impl, 0, 0, 0, 0) }
+            }
+        }
+        contract impl2 {
+            uint256 value;
+        }
+        """
+        findings = detect_storage_collision_source(ROOT, self.path, source)
+        self.assertEqual(
+            [(item.title, item.confidence) for item in findings],
+            [("Proxy slot 0 overlaps implementation storage", "high")],
+        )
+
     def test_d06_reassignment_invalidates_slot_read(self):
         source = f"""
         contract Proxy {{

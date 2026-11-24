@@ -46,8 +46,16 @@ source_dirty="$(test -n "$(git status --porcelain)" && echo true || echo false)"
 The setup block above mirrors the Slither workflow: `$report_dir` is a fresh
 temporary directory (`mktemp -d`), `$AUDIT_TEST_SEED` is `0x13`,
 `$source_revision` is the current commit, and `$source_dirty` records whether
-the checkout has uncommitted changes. Locally, substitute any report path for
-`$report_dir/slither.json`, for example `docs/slither-rescan-2026-11-24.json`.
+the checkout has uncommitted changes. Each Slither scan must write to a
+FRESH output path: the setup block's `report_dir` is a fresh temporary
+directory (`mktemp -d`) per run, so never point the scan at an existing
+file — Slither 0.11.6 does not overwrite an existing output file, and a
+scan (or a second run reusing the same `report_dir`) pointed at an
+existing path silently leaves the stale report in place for the gate and
+the research reports. The committed artifact
+`docs/slither-rescan-2026-11-24.json` is an input only for checks that
+intentionally inspect a saved scan (for example, running the Slither gate
+on a saved report).
 
 ## New detector template
 

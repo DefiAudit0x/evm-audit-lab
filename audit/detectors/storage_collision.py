@@ -102,7 +102,7 @@ def _has_implementation_name_component(name: str) -> bool:
     implementation while ``VulnerableImplV1`` (component ``Impl``) still is.
     Acronym runs stay together, so ``IMPL`` is one component, not four.
     """
-    components = re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z0-9]+", name)
+    components = re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|[0-9]+", name)
     return any(
         component.lower() in {"impl", "logic", "implementation"}
         for component in components
