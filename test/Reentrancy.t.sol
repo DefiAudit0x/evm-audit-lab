@@ -65,6 +65,35 @@ contract ReentrancyAttacker {
     }
 }
 
+/// @notice Re-enters withdraw() with the same partial amount during the
+///         payout callback, to prove a partial withdrawal leaves the
+///         remainder spendable.
+contract PartialReentrancyAttacker {
+    IVault public immutable vault;
+    uint256 public reentries;
+    uint256 public reentryAmount;
+
+    constructor(IVault vault_) {
+        vault = vault_;
+    }
+
+    function seed() external payable {
+        vault.deposit{value: msg.value}();
+    }
+
+    function attack(uint256 amount) external {
+        reentryAmount = amount;
+        vault.withdraw(amount);
+    }
+
+    receive() external payable {
+        if (reentries == 0) {
+            reentries = 1;
+            vault.withdraw(reentryAmount);
+        }
+    }
+}
+
 contract ReentrancyTest is Test {
     VulnerableVault vulnerable;
     SafeVault safe;
@@ -101,6 +130,26 @@ contract ReentrancyTest is Test {
         assertEq(vulnerable.balances(depositor), 0, "credit not fully withdrawn");
         assertEq(depositor.balance, 2 ether, "depositor did not recover both withdrawals");
         vm.stopPrank();
+    }
+
+    /// @notice SafeVault partial credit: a partial withdrawal credits the
+    ///         partial amount, leaves the remainder, and a second
+    ///         (reentrant) withdraw of the remainder works.
+    function testSafeVaultPartialWithdrawalLeavesRemainderSpendable() public {
+        PartialReentrancyAttacker partialAttacker = new PartialReentrancyAttacker(IVault(address(safe)));
+        vm.deal(address(this), 1 ether);
+        partialAttacker.seed{value: 1 ether}();
+
+        assertEq(safe.balances(address(partialAttacker)), 1 ether, "seed deposit must credit in full");
+
+        partialAttacker.attack(0.5 ether);
+
+        // The reentrant second withdraw of the remainder succeeded: the
+        // attacker recovered the whole deposit in two halves, nothing more.
+        assertEq(partialAttacker.reentries(), 1, "reentrant second withdraw must have run");
+        assertEq(address(partialAttacker).balance, 1 ether, "both halves must be paid out");
+        assertEq(safe.balances(address(partialAttacker)), 0, "no credit may remain");
+        assertEq(address(safe).balance, 0, "vault must be empty after full recovery");
     }
 
     /// @notice Regression: SafeVault rejects re-entry.

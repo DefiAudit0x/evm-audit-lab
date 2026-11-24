@@ -43,25 +43,47 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
             implementation_fields = _storage_fields(implementation, by_name)
             if not implementation_fields:
                 continue
+            related = _is_related_implementation(proxy, implementation)
             for slot, (proxy_name, proxy_type, proxy_line) in enumerate(proxy_fields):
                 if slot >= len(implementation_fields):
                     continue
                 impl_name, impl_type, _ = implementation_fields[slot]
                 # The same slot is unsafe regardless of type; matching names
                 # are especially suspicious because intent can be mistaken.
+                if related:
+                    title = f"Proxy slot {slot} overlaps implementation storage"
+                    message = (
+                        f"Proxy field `{proxy_name}` ({proxy_type}) and implementation field "
+                        f"`{impl_name}` ({impl_type}) both occupy sequential slot {slot}. "
+                        "Delegatecall writes can corrupt proxy control state."
+                        + (" The isolated implementation pointer does not protect these fields."
+                           if slot_status == "valid" else "")
+                    )
+                    confidence = "high"
+                else:
+                    # No relationship between the proxy and this contract
+                    # could be established (see _is_related_implementation):
+                    # the overlap may be coincidental, so say so and lower
+                    # confidence instead of reporting it as a confirmed
+                    # implementation collision.
+                    title = f"Proxy slot {slot} may overlap unverified implementation storage"
+                    message = (
+                        f"Proxy field `{proxy_name}` ({proxy_type}) and field "
+                        f"`{impl_name}` ({impl_type}) of contract "
+                        f"`{implementation.name}` both occupy sequential slot {slot}. "
+                        "The proxy does not reference this contract and nothing marks it "
+                        "as the proxy's implementation, so this pairing is unverified: "
+                        "confirm the proxy actually delegates to this contract before "
+                        "treating the overlap as a storage collision."
+                    )
+                    confidence = "medium"
                 findings.append(
                     Finding(
                         detector="storage_collision",
                         severity="high",
-                        confidence="high",
-                        title=f"Proxy slot {slot} overlaps implementation storage",
-                        message=(
-                            f"Proxy field `{proxy_name}` ({proxy_type}) and implementation field "
-                            f"`{impl_name}` ({impl_type}) both occupy sequential slot {slot}. "
-                            "Delegatecall writes can corrupt proxy control state."
-                            + (" The isolated implementation pointer does not protect these fields."
-                               if slot_status == "valid" else "")
-                        ),
+                        confidence=confidence,
+                        title=title,
+                        message=message,
                         file=relative_path(root, source_path),
                         line=proxy_line,
                         contract=proxy.name,
@@ -70,6 +92,42 @@ def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
                 break
     findings.extend(_check_v1_v2_append_only(root, source_path, contracts, by_name))
     return findings
+
+
+def _has_implementation_name_component(name: str) -> bool:
+    """True when a whole name component marks the contract as an implementation.
+
+    The name is split on CamelCase/underscore/digit boundaries and matched
+    whole-component, so ``SimpleToken`` (``Simple``/``Token``) is not an
+    implementation while ``VulnerableImplV1`` (component ``Impl``) still is.
+    Acronym runs stay together, so ``IMPL`` is one component, not four.
+    """
+    components = re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|[0-9]+", name)
+    return any(
+        component.lower() in {"impl", "logic", "implementation"}
+        for component in components
+    )
+
+
+def _is_related_implementation(proxy: Contract, implementation: Contract) -> bool:
+    """Best-effort evidence that a contract is the proxy's implementation.
+
+    Static pairing is a heuristic: a contract is treated as related when
+    the proxy references it by name (a typed implementation variable, a
+    `new` expression, a cast), when a whole name component marks it as an
+    implementation (``Impl``/``Logic``/``Implementation``), or when it shares
+    the proxy's name stem (``VulnerableProxy`` / ``VulnerableImplV1``). Anything else
+    is reported as an unverified candidate, not dropped: the overlap is
+    still real if the proxy does delegate to that contract.
+    """
+    if re.search(r"\b" + re.escape(implementation.name) + r"\b", proxy.code_body):
+        return True
+    if _has_implementation_name_component(implementation.name):
+        return True
+    stem = re.sub(r"Proxy$", "", proxy.name)
+    if stem and implementation.name.startswith(stem):
+        return True
+    return False
 
 
 def _dedicated_slot_status(contract: Contract) -> str:

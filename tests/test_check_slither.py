@@ -135,7 +135,7 @@ class SlitherGateTests(unittest.TestCase):
             ("divide-before-multiply", "Medium", "src/SafeLending.sol", (65, 74)),
             ("unused-return", "Medium", "src/SafeLending.sol", (108, 123)),
             ("incorrect-equality", "Medium", "src/SafeSwap.sol", (57, 75)),
-            ("controlled-delegatecall", "High", "src/SafeUupsVault.sol", (52, 71)),
+            ("controlled-delegatecall", "High", "src/SafeUupsVault.sol", (56, 75)),
             ("incorrect-equality", "Medium", "src/SafeVault4626.sol", (49, 64)),
             ("reentrancy-balance", "High", "src/SafeVault4626.sol", (66, 84)),
             ("reentrancy-balance", "High", "src/SafeFotVault.sol", (36, 45)),
@@ -215,6 +215,38 @@ class SlitherGateTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("EXPIRED [High]", output.getvalue())
         self.assertIn("expired on 2000-01-01", output.getvalue())
+
+    def test_markdown_anchor_cannot_satisfy_required_detection(self):
+        # m-22: the structured mapping names SafeRouter while the Markdown
+        # anchor names VulnerableVault; the anchor is display-only, so the
+        # required reentrancy-eth detection on VulnerableVault must fail.
+        # The genuine VulnerableVault detection is removed first, so the
+        # anchor is the only thing that could satisfy the required gate.
+        finding = detector("reentrancy-eth", "High", "src/SafeRouter.sol")
+        finding["first_markdown_element"] = "src/VulnerableVault.sol#L5-L6"
+        body = report(finding)
+        body["results"]["detectors"] = [
+            det
+            for det in body["results"]["detectors"]
+            if not (
+                det["check"] == "reentrancy-eth"
+                and det["elements"][0]["source_mapping"]["filename_relative"]
+                == "src/VulnerableVault.sol"
+            )
+        ]
+        self.assert_gate(
+            body,
+            1,
+            "reentrancy-eth no longer fires on src/VulnerableVault.sol",
+        )
+
+    def test_markdown_anchor_lines_cannot_satisfy_triage(self):
+        # m-22 (checker side): a Safe* finding with no mapped lines whose
+        # anchor range matches an accepted entry's lines must stay
+        # untriaged — anchor lines are display-only, not triage evidence.
+        finding = detector("reentrancy-balance", "High", "src/SafeFotVault.sol")
+        finding["first_markdown_element"] = "src/SafeFotVault.sol#L36-L45"
+        self.assert_gate(report(finding), 1, "UNTRIAGED [High]")
 
     def test_required_detection_is_still_required(self):
         body = report()

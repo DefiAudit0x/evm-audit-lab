@@ -32,7 +32,7 @@ forge test --match-contract TxOriginTest --match-test testExploitVulnerableTxOri
 
 | Severity | Conditions | Outcome |
 | --- | --- | --- |
-| **High** | Owner calls any attacker-controlled contract | All privileged actions (withdraw, mint, upgrade) can be triggered by the attacker |
+| **High** | Owner calls any attacker-controlled contract | All vault ETH can be withdrawn; other privileged functions would also be exposed if protected by the same `tx.origin` check |
 
 ## Remediation
 

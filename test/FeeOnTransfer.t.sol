@@ -115,6 +115,41 @@ contract FeeOnTransferTest is Test {
         assertEq(token.balanceOf(address(vault)), 0, "vault solvent at zero");
     }
 
+    function testSafeFotVaultBlocksNestedWithdrawCallback() public {
+        HookToken token = new HookToken();
+        SafeFotVault vault = new SafeFotVault(address(token));
+        FotWithdrawCallback helper = new FotWithdrawCallback(vault);
+
+        // The helper holds its own vault balance, so the only reason its
+        // nested withdraw can fail is the shared lock — not a missing
+        // balance.
+        token.mint(address(helper), DEPOSIT);
+        token.mint(alice, DEPOSIT);
+        vm.prank(address(helper));
+        token.approve(address(vault), DEPOSIT);
+        helper.deposit(DEPOSIT);
+
+        vm.prank(alice);
+        token.approve(address(vault), DEPOSIT);
+        vm.prank(alice);
+        vault.deposit(DEPOSIT);
+
+        // During Alice's withdrawal transfer, the token calls back into
+        // the helper, which attempts a nested withdraw directly.
+        token.configureCallback(
+            address(helper), abi.encodeCall(FotWithdrawCallback.nestedWithdraw, (DEPOSIT)), true, false
+        );
+        vm.prank(alice);
+        vault.withdraw(DEPOSIT);
+
+        assertTrue(helper.attempted(), "nested withdraw must have been attempted");
+        assertEq(helper.failure(), SafeFotVault.Reentrancy.selector, "nested withdraw blocked by the shared lock");
+        assertEq(vault.balances(alice), 0, "outer withdrawal completed");
+        assertEq(token.balanceOf(alice), DEPOSIT, "alice received her withdrawal");
+        assertEq(vault.balances(address(helper)), DEPOSIT, "helper balance untouched by the failed nesting");
+        assertEq(token.balanceOf(address(vault)), DEPOSIT, "vault keeps only the helper deposit");
+    }
+
     function testSafeFotVaultBlocksCallbacksAcrossDepositAndWithdraw() public {
         HookToken token = new HookToken();
         SafeFotVault vault = new SafeFotVault(address(token));
@@ -179,5 +214,29 @@ contract FeeToken {
         allowance[from][msg.sender] = allowed - amount;
         _deliver(from, to, amount);
         return true;
+    }
+}
+
+/// @dev Helper that attempts a nested withdraw from inside a token callback
+///      and records the exact revert reason instead of bubbling it.
+contract FotWithdrawCallback {
+    SafeFotVault public immutable vault;
+    bool public attempted;
+    bytes4 public failure;
+
+    constructor(SafeFotVault vault_) {
+        vault = vault_;
+    }
+
+    function deposit(uint256 amount) external {
+        vault.deposit(amount);
+    }
+
+    function nestedWithdraw(uint256 amount) external {
+        attempted = true;
+        try vault.withdraw(amount) {}
+        catch (bytes memory result) {
+            failure = bytes4(result);
+        }
     }
 }

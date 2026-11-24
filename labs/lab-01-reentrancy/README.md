@@ -60,7 +60,7 @@ Apply **checks-effects-interactions**:
 2. **Effects** — update state (`balances[msg.sender] -= amount`).
 3. **Interactions** — perform the external call last (`msg.sender.call{value:}()`).
 
-See `SafeVault.sol`. The second `withdraw()` call from the attacker's `receive()` now fails the balance check because accounting is already updated.
+See `SafeVault.sol`. The second `withdraw()` call from the attacker's `receive()` now fails the balance check because accounting is already updated — for a full-balance withdrawal. A partial-balance withdrawal leaves funds in the vault, so a second (reentrant) withdraw of the remainder can still succeed.
 
 ### Additional defenses
 

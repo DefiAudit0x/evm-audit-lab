@@ -15,11 +15,29 @@ contract RescueMockFeed {
     }
 }
 
+contract RejectingRescueRecipient {
+    receive() external payable {
+        revert("reject");
+    }
+}
+
 contract RescueEthTest is Test {
     SafeLending lending;
     SafeProxy proxy;
     address user = makeAddr("user");
     address payable recipient = payable(makeAddr("recipient"));
+
+    // Nested-rescue callback state: when set, the test contract's receive()
+    // re-enters rescueETH on `lending` as the owner (the test contract).
+    bool internal _reenterRescue;
+    uint256 internal _reenterAmount;
+
+    receive() external payable {
+        if (_reenterRescue) {
+            _reenterRescue = false;
+            lending.rescueETH(payable(address(this)), _reenterAmount);
+        }
+    }
 
     function setUp() public {
         lending = new SafeLending(address(new RescueMockFeed()));
@@ -113,5 +131,75 @@ contract RescueEthTest is Test {
         SafeImplV1(address(proxy)).setValue(42);
         assertEq(SafeImplV1(address(proxy)).value(), 42);
         assertEq(proxy.admin(), address(this));
+    }
+
+    /// @notice A failed transfer rolls everything back: the rescue reverts
+    ///         with "transfer failed" and balances, collateral, and the
+    ///         recoverable surplus are intact — on both the lending vault
+    ///         and the proxy — and the surplus stays recoverable afterwards.
+    function testRescueRejectsFailedTransferAndPreservesState() public {
+        _deposit();
+        _send(payable(address(lending)), 0.5 ether);
+        _send(payable(address(proxy)), 1 ether);
+        RejectingRescueRecipient rejector = new RejectingRescueRecipient();
+
+        vm.expectRevert("transfer failed");
+        lending.rescueETH(payable(address(rejector)), 0.5 ether);
+        assertEq(address(lending).balance, 1.5 ether, "failed lending rescue must leave balances intact");
+        assertEq(lending.collateral(user), 1 ether, "collateral must be untouched");
+        assertEq(lending.totalCollateral(), 1 ether, "total collateral must be untouched");
+
+        vm.expectRevert("transfer failed");
+        proxy.rescueETH(payable(address(rejector)), 1 ether);
+        assertEq(address(proxy).balance, 1 ether, "failed proxy rescue must leave balances intact");
+
+        // The surplus is still recoverable to a good recipient afterwards.
+        lending.rescueETH(recipient, 0.5 ether);
+        assertEq(recipient.balance, 0.5 ether, "surplus must stay recoverable");
+        assertEq(address(lending).balance, 1 ether, "only collateral must remain");
+        proxy.rescueETH(recipient, 1 ether);
+        assertEq(recipient.balance, 1.5 ether, "proxy funds must stay recoverable");
+        assertEq(address(proxy).balance, 0, "proxy must be empty after recovery");
+    }
+
+    /// @notice Nested owner callbacks: a rescue paid to the owner re-enters
+    ///         rescueETH during the callback. Each rescue recomputes the
+    ///         live surplus, so the nested rescue can take the remainder —
+    ///         but never more: a nested attempt above the remaining surplus
+    ///         reverts and rolls the whole outer rescue back.
+    function testLendingNestedOwnerCallbackCannotOverDrain() public {
+        _deposit();
+        _send(payable(address(lending)), 0.5 ether);
+        uint256 ownerBalanceBefore = address(this).balance;
+
+        // Nested rescue of the remainder: 0.25 outer + 0.25 nested = the
+        // full 0.5 surplus, collateral untouched.
+        _reenterRescue = true;
+        _reenterAmount = 0.25 ether;
+        lending.rescueETH(payable(address(this)), 0.25 ether);
+        assertEq(address(this).balance, ownerBalanceBefore + 0.5 ether, "nested rescue must pay the remainder");
+        assertEq(address(lending).balance, 1 ether, "only collateral must remain");
+        assertEq(lending.collateral(user), 1 ether, "collateral must be untouched");
+        assertEq(lending.totalCollateral(), 1 ether, "total collateral must be untouched");
+
+        // A further rescue now exceeds the (exhausted) surplus.
+        vm.expectRevert("exceeds recoverable");
+        lending.rescueETH(recipient, 1);
+
+        // Nested over-drain attempt: fresh 0.5 surplus, outer rescue of
+        // 0.25 whose callback tries to rescue 0.5 more (only 0.25 left).
+        // The nested call reverts, the outer transfer fails, and the whole
+        // rescue rolls back — no ETH moves at all.
+        _send(payable(address(lending)), 0.5 ether);
+        assertEq(address(lending).balance, 1.5 ether, "fresh surplus must be in place");
+        ownerBalanceBefore = address(this).balance;
+        _reenterRescue = true;
+        _reenterAmount = 0.5 ether;
+        vm.expectRevert("transfer failed");
+        lending.rescueETH(payable(address(this)), 0.25 ether);
+        assertEq(address(this).balance, ownerBalanceBefore, "failed nested rescue must pay nothing");
+        assertEq(address(lending).balance, 1.5 ether, "failed nested rescue must leave balances intact");
+        assertEq(lending.collateral(user), 1 ether, "collateral must be untouched");
+        assertEq(lending.totalCollateral(), 1 ether, "total collateral must be untouched");
     }
 }

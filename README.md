@@ -43,7 +43,7 @@ This repository is designed to make vulnerability reasoning **reproducible**: ea
 | --- | --- | --- | --- |
 | 01 | [Reentrancy](./test/Reentrancy.t.sol) | Reentrancy (checks-effects-interactions) | ✅ |
 | 02 | [tx.origin Authorization](./test/TxOrigin.t.sol) | Access control via `tx.origin` | ✅ |
-| 03 | [Flash Loan Price Manipulation](./test/FlashLoan.t.sol) | Oracle manipulation via single-block borrow | ✅ |
+| 03 | [Flash Loan Price Manipulation](./test/FlashLoan.t.sol) | Reserve manipulation and TWAP | ✅ |
 | 04 | [Stale Oracle](./test/StaleOracle.t.sol) | Missing staleness / heartbeat check | ✅ |
 | 05 | [Integer Precision Loss](./test/Precision.t.sol) | Rounding & precision attacks (EIP-4626 inflation) | ✅ |
 | 06 | [Sandwich / MEV Front-running](./test/Sandwich.t.sol) | Mempool exploitation | ✅ |
@@ -54,7 +54,7 @@ This repository is designed to make vulnerability reasoning **reproducible**: ea
 | 11 | [ERC-4626 Inflation Attack](./test/InflationAttack.t.sol) | First-depositor share-price inflation via donation | ✅ |
 | 12 | [Unbounded Loop DoS](./test/LoopDoS.t.sol) | Gas-limit denial of service on an unbounded payee list | ✅ |
 | 13 | [Fee-on-Transfer Accounting](./test/FeeOnTransfer.t.sol) | Claims minted from requested, not received, amounts | ✅ |
-| 14 | [Unprotected UUPS Initializer](./test/UupsTakeover.t.sol) | Uninitialized proxy takeover via unguarded `initialize` | ✅ |
+| 14 | [Unprotected UUPS Initializer](./test/UupsTakeover.t.sol) | Repeated initialization and ownership reassignment via unguarded `initialize` | ✅ |
 
 ## Repository structure
 
@@ -149,7 +149,7 @@ Tool output (Slither, Foundry fuzz) is treated as a **lead for manual verificati
 
 ### Static analysis in CI
 
-A second workflow (`.github/workflows/slither.yml`) runs pinned Slither 0.11.6 on every push and enforces these checks encoded in `.github/scripts/check_slither.py`:
+A second workflow (`.github/workflows/slither.yml`) runs pinned Slither 0.11.6 on pushes to `main` and on pull requests targeting `main`, and enforces these checks encoded in `.github/scripts/check_slither.py`:
 
 1. **Lab detector signals** — selected findings must appear on the `Vulnerable*` examples. `reentrancy-eth` (Lab 01), `tx-origin` (Lab 02), and `unchecked-transfer` (Lab 10) check the taught behaviour directly. `arbitrary-send-eth` on Lab 02 checks the consequence of its authorization bypass. Lab 06's `unchecked-transfer` checks token-call handling, while its sandwich/slippage lesson is manual. Lab 14's `controlled-delegatecall` and `arbitrary-send-eth` findings check upgrade and custody-loss consequences; its unguarded-initializer lesson is manual.
 2. **Safe scan coverage and companion behaviour** — Slither's compilation metadata must list every `src/Safe*.sol` counterpart as scanned. The gate requires `reentrancy-eth` to stay silent on `SafeVault`; `tx-origin` and `arbitrary-send-eth` on `SafeAccess`; `unchecked-transfer` on `SafeAmm` (token-call handling) and `SafeRouter` (Lab 10's discarded return); and `arbitrary-send-eth` on `SafeUupsVault` (owner-guarded withdrawal). These checks cover the named behaviours; they do not establish that every Safe contract is free of every finding.
@@ -168,7 +168,7 @@ The core lessons for flash-loan and stale-oracle manipulation, rounding inflatio
 
 | Milestone | Target | Status |
 | --- | --- | --- |
-| 4 core labs | Reentrancy, tx.origin, Flash Loan, Stale Oracle | ✅ Done |
+| 4 core labs | Reentrancy, tx.origin, Reserve Manipulation and TWAP, Stale Oracle | ✅ Done |
 | 6 additional labs | Precision, MEV, Proxy, Signatures, ACL, Low-level calls | ✅ Done |
 | 4 companion labs | 4626 inflation, Loop DoS, Fee-on-transfer, UUPS initializer | ✅ Done |
 | Slither integration | CI with detection assertions, safe-regression gate and written triage | ✅ Done |

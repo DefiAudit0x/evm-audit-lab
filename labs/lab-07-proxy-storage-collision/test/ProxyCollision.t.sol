@@ -35,8 +35,11 @@ import {SafeProxy, SafeImplV1, SafeImplV2} from "../src/SafeProxy.sol";
 /// Remediation:
 ///   Store proxy metadata in EIP-1967 slots (keccak256-derived, far from
 ///   any realistic layout), keep implementation storage append-only
-///   across upgrades, and initialize with an initializer — never a
-///   constructor (see SafeProxy / SafeImplV1 / SafeImplV2).
+///   across upgrades, and initialize with a one-time `initializer`-guarded
+///   `initialize` — never a constructor. This example does not demonstrate
+///   guarded initialization: its implementations expose only unrestricted
+///   setters and there is no `initialize` function, so a production proxy
+///   must add it (see SafeProxy / SafeImplV1 / SafeImplV2).
 ///
 /// Regression test:
 ///   The same `setValue` call against SafeProxy leaves `admin()` intact,
@@ -78,6 +81,23 @@ contract ProxyCollisionTest is Test {
         assertEq(proxy.implementation(), address(impl));
     }
 
+    function testSafeProxyRejectsInitializerCalls() public {
+        // Neither SafeProxy nor SafeImplV1 has an initializer: guarded
+        // initialization is an additional production requirement absent
+        // from this example, and any initialize() call through the proxy
+        // reverts instead of taking effect.
+        SafeImplV1 impl = new SafeImplV1();
+        SafeProxy proxy = new SafeProxy(address(impl));
+
+        (bool ok0,) = address(proxy).call(abi.encodeWithSignature("initialize()"));
+        assertFalse(ok0, "initialize() must revert through the proxy");
+        (bool ok1,) = address(proxy).call(abi.encodeWithSignature("initialize(uint256)", 1));
+        assertFalse(ok1, "initialize(uint256) must revert through the proxy");
+
+        assertEq(proxy.admin(), address(this), "admin unchanged by the failed calls");
+        assertEq(proxy.implementation(), address(impl), "implementation unchanged by the failed calls");
+    }
+
     function testSafeProxyKeepsAdminSeparate() public {
         SafeImplV1 implV1 = new SafeImplV1();
         SafeProxy proxy = new SafeProxy(address(implV1));
@@ -94,5 +114,22 @@ contract ProxyCollisionTest is Test {
         assertEq(SafeImplV2(address(proxy)).value(), 42, "append-only layout preserves slot 0");
         SafeImplV2(address(proxy)).setExtra(7);
         assertEq(SafeImplV2(address(proxy)).extra(), 7, "appended slot is usable");
+    }
+
+    /// @notice A non-admin upgrade attempt reverts and the implementation
+    ///         (and admin) remain unchanged.
+    function testSafeProxyRejectsNonAdminUpgrade() public {
+        SafeImplV1 implV1 = new SafeImplV1();
+        SafeProxy proxy = new SafeProxy(address(implV1));
+        SafeImplV2 replacement = new SafeImplV2();
+
+        address nonAdmin = makeAddr("non-admin");
+        vm.prank(nonAdmin);
+        vm.expectRevert(bytes("not admin"));
+        proxy.upgradeTo(address(replacement));
+
+        assertEq(proxy.implementation(), address(implV1), "rejected upgrade must preserve implementation");
+        assertEq(proxy.admin(), address(this), "admin must remain unchanged");
+        assertEq(SafeImplV1(address(proxy)).value(), 0, "implementation state must be untouched");
     }
 }

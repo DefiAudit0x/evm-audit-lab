@@ -78,9 +78,39 @@ contract TxOriginTest is Test {
         assertEq(address(vulnerable).balance, 0, "vault should be drained");
     }
 
+    /// @notice Intended access stays usable: a direct owner withdrawal
+    ///         succeeds, with a different tx.origin than the owner.
+    function testSafeAccessDirectOwnerWithdrawalSucceeds() public {
+        address payable dest = payable(makeAddr("dest"));
+
+        // Single-argument prank: only msg.sender is the owner; tx.origin
+        // stays the test contract, proving the check does not depend on it.
+        vm.prank(owner);
+        safe.withdraw(dest, 3 ether);
+
+        assertEq(dest.balance, 3 ether, "owner must withdraw directly");
+        assertEq(address(safe).balance, 7 ether, "vault keeps the remainder");
+    }
+
+    /// @notice An unauthorized direct caller reverts, even calling directly.
+    function testSafeAccessRejectsUnauthorizedDirectCaller() public {
+        address stranger = makeAddr("stranger");
+
+        vm.prank(stranger);
+        vm.expectRevert("not owner");
+        safe.withdraw(payable(stranger), 1 ether);
+
+        assertEq(address(safe).balance, 10 ether, "safe vault should retain funds");
+        assertEq(stranger.balance, 0, "stranger must receive nothing");
+    }
+
     /// @notice Regression: the same path against SafeAccess must revert.
     function testCannotExploitSafeAccess() public {
-        // The vault checks tx.origin, so the prank must set it too.
+        // SafeAccess checks msg.sender, not tx.origin, so setting the
+        // origin is not required by SafeAccess. The prank sets it too
+        // to reproduce the phishing context (owner calling an
+        // attacker-controlled contract) and to catch a regression
+        // back to a tx.origin check.
         vm.startPrank(owner, owner);
         vm.expectRevert("not owner");
         attacker.proxyWithdrawSafe(safe, attackerEOA, 10 ether);

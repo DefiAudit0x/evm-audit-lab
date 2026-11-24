@@ -43,6 +43,22 @@ contract GasGuzzlingSplitterPayee {
     }
 }
 
+contract GasMeterSplitterPayee {
+    uint256 public gasOnEntry;
+
+    function register(SafeSplitter splitter) external payable {
+        splitter.register{value: msg.value}();
+    }
+
+    function claim(SafeSplitter splitter) external {
+        splitter.claim();
+    }
+
+    receive() external payable {
+        gasOnEntry = gasleft();
+    }
+}
+
 /// @title LoopDoS.t.sol
 /// @notice Lab 12 — Exploit + regression tests for unbounded-loop DoS.
 contract LoopDoSTest is Test {
@@ -63,7 +79,11 @@ contract LoopDoSTest is Test {
     }
 
     function _bloat(VulnerableSplitter splitter) internal {
-        for (uint256 i = 1; i <= ATTACK_PAYEES; ++i) {
+        _bloat(splitter, ATTACK_PAYEES);
+    }
+
+    function _bloat(VulnerableSplitter splitter, uint256 attackerPayees) internal {
+        for (uint256 i = 1; i <= attackerPayees; ++i) {
             _seedPayee(splitter, address(uint160(uint256(keccak256(abi.encode("payee", i))))), 1);
         }
         _seedPayee(splitter, honest, HONEST_BALANCE);
@@ -79,6 +99,54 @@ contract LoopDoSTest is Test {
         splitter.distribute{gas: GAS_BUDGET}();
 
         assertEq(splitter.owed(honest), HONEST_BALANCE);
+    }
+
+    /// @notice Measured boundary (m-17): at a 30M gas budget, 1,767 payees
+    ///         (1,766 attacker payees + the honest payee) still distribute —
+    ///         about 17,000 gas per funded payee — while 1,768 payees
+    ///         revert out of gas. Each case runs in its own transaction so
+    ///         the payee addresses are cold.
+    function testVulnerableDistributeSucceedsAtMeasuredBoundary() public {
+        VulnerableSplitter splitter = new VulnerableSplitter();
+        _bloat(splitter, 1766);
+
+        assertEq(splitter.payeeCount(), 1767, "boundary list must hold 1,767 payees");
+
+        (bool ok,) = address(splitter).call{gas: GAS_BUDGET}(abi.encodeWithSignature("distribute()"));
+        assertTrue(ok, "1,767 payees must still distribute at 30M gas");
+        assertEq(splitter.owed(honest), 0, "honest payee must be paid at the boundary");
+        assertEq(honest.balance, HONEST_BALANCE, "honest payee must receive the payout");
+    }
+
+    function testVulnerableDistributeBricksOnePayeePastMeasuredBoundary() public {
+        VulnerableSplitter splitter = new VulnerableSplitter();
+        _bloat(splitter, 1767);
+
+        assertEq(splitter.payeeCount(), 1768, "over-boundary list must hold 1,768 payees");
+
+        (bool ok,) = address(splitter).call{gas: GAS_BUDGET}(abi.encodeWithSignature("distribute()"));
+        assertFalse(ok, "1,768 payees must brick at 30M gas");
+        assertEq(splitter.owed(honest), HONEST_BALANCE, "failed distribute must pay nobody");
+        assertEq(honest.balance, 0, "honest payee must receive nothing");
+    }
+
+    /// @notice Regression (m-18): the payout call requests PAYOUT_GAS
+    ///         (30,000) and the EVM adds the 2,300-gas value-transfer
+    ///         stipend on top, so a recipient observes over 32,000 gas
+    ///         on entry (measured: 32,243).
+    function testSafeSplitterPayoutRequestsThirtyThousandGasPlusStipend() public {
+        SafeSplitter splitter = new SafeSplitter();
+        GasMeterSplitterPayee meter = new GasMeterSplitterPayee();
+        vm.deal(address(this), 1 ether);
+        meter.register{value: 1 ether}(splitter);
+
+        assertTrue(splitter.distribute(256));
+        meter.claim(splitter);
+
+        assertEq(splitter.PAYOUT_GAS(), 30_000, "requested call gas");
+        assertGt(meter.gasOnEntry(), 32_000, "recipient must observe the stipend on top of the request");
+        assertLt(meter.gasOnEntry(), 33_000, "entry gas must stay near 30,000 + 2,300");
+        assertEq(address(meter).balance, 1 ether, "payout must still arrive in full");
     }
 
     function testSafeSplitterCreditsLargeListThroughBoundedBatches() public {

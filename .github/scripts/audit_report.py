@@ -396,43 +396,19 @@ def parse_findings(raw, root):
                 location(filename, root, mapping.get("lines"))
             )
 
+        # Policy attribution uses the structured source mappings ONLY.
+        # `first_markdown_element` is a display hint: it is kept verbatim
+        # for display and never contributes a location, so an anchor-only
+        # path cannot satisfy a required detection or a triage entry
+        # (m-22). This report and check_slither.py both attribute findings
+        # through the shared `attributed_paths` helper over structured
+        # paths only.
         anchor = detector.get("first_markdown_element")
         if anchor is not None:
             require(
                 isinstance(anchor, str),
                 "first_markdown_element must be a string",
             )
-        if anchor:
-            if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", anchor):
-                primary = locations[0] if locations else None
-                require(primary is not None, "URL source anchor has no source mapping")
-                locations.insert(0, primary)
-                anchor = ""
-            filename, _, fragment = anchor.partition("#")
-        if anchor:
-            match = re.fullmatch(
-                r"L?([1-9][0-9]*)(?:-L?([1-9][0-9]*))?",
-                fragment,
-            )
-            primary = location(filename, root)
-            if match:
-                start = int(match[1])
-                end = int(match[2] or match[1])
-                require(
-                    end >= start,
-                    "source anchor has a reversed line range",
-                )
-                primary.update(start_line=start, end_line=end)
-            else:
-                primary = next(
-                    (
-                        item
-                        for item in locations
-                        if item["path"] == primary["path"]
-                    ),
-                    primary,
-                )
-            locations.insert(0, primary)
 
         require(
             bool(locations),
@@ -465,7 +441,13 @@ def parse_findings(raw, root):
                 ensure_ascii=True,
             ).encode()
         ).hexdigest()
-        findings[key] = {"id": key, **canonical}
+        # The Markdown anchor is display-only metadata: it is recorded
+        # verbatim but excluded from the canonical finding (and therefore
+        # from the finding id), so it can never affect policy.
+        finding = {"id": key, **canonical}
+        if anchor:
+            finding["markdown_anchor"] = anchor
+        findings[key] = finding
 
     return sorted(
         findings.values(),
@@ -487,7 +469,16 @@ def collect_research(
     source_revision=None,
     source_dirty=None,
 ):
-    """Collect provenance and Foundry output from the same checkout and run."""
+    """Collect provenance and Foundry output for an audit report.
+
+    The build directory and test results are caller-supplied paths: the
+    exporter records their contents but does not verify they were
+    produced from the recorded revision in the same run (m-23). A
+    caller-supplied revision is therefore labelled unverified; only a
+    revision read by the exporter from its own checkout is labelled
+    exporter-checkout, and even then the input artifacts remain
+    caller-supplied (see `inputs_provenance`).
+    """
     def command(*args):
         try:
             return subprocess.check_output(args, cwd=root, text=True).strip()
@@ -528,7 +519,8 @@ def collect_research(
         "compiler_settings": compilers,
         "source_revision": source_revision if source_revision is not None else command("git", "rev-parse", "HEAD"),
         "source_dirty": source_dirty if source_dirty is not None else bool(command("git", "status", "--porcelain")),
-        "source_revision_origin": "provided" if source_revision is not None and source_dirty is not None else "exporter-checkout",
+        "source_revision_origin": "provided-unverified" if source_revision is not None else "exporter-checkout",
+        "inputs_provenance": "caller-supplied, unverified",
         "test_seeds": {"foundry_fuzz_seed": seed},
         "minimal_counterexamples": counterexamples,
         "storage_layouts": layouts,

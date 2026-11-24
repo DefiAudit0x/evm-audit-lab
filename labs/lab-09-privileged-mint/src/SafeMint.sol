@@ -4,10 +4,11 @@ pragma solidity ^0.8.24;
 /// @title SafeMint
 /// @notice Lab 09 — Role-gated minting, a lifetime issuance cap, and ETH
 ///         backing for all outstanding 1:1 redeemable claims.
-/// @dev Assumes one ETH of reserve backs each supply unit. The admin controls
-///      minters; issuance has a lifetime cap and outstanding supply cannot
-///      exceed current ETH backing. This is an educational model, not a
-///      production token or a proof that admin/minter keys are secure.
+/// @dev Assumes one wei backs each raw supply unit; 10^18 units redeem for
+///      one ETH. The admin controls minters; issuance has a lifetime cap and
+///      outstanding supply cannot exceed current ETH backing. This is an
+///      educational model, not a production token or a proof that admin/minter
+///      keys are secure.
 contract SafeMint {
     address public admin;
     uint256 public immutable maxSupply;

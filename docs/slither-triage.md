@@ -26,11 +26,13 @@ time-bounded with owner and evidence.
 | `SafeUupsVault` / `controlled-delegatecall` | Removed. Owner gating alone does not prove an upgrade target safe, so the detector remains visible. |
 
 Slither 0.11.6 ran a real scan and produced 115 detector results. The sanitized
-baseline report is committed at
+pre-fix baseline report is committed at
 [`docs/slither-baseline-2026-11-21.json`](slither-baseline-2026-11-21.json),
 so maintainers can retrieve and re-run the triage without a machine-specific
 home-directory path. Fix 36 (2026-11-21) resolved the two
-`locked-ether` findings; the re-scan produced 117 detector results.
+`locked-ether` findings; the re-scan produced 117 detector results,
+committed at
+[`docs/slither-rescan-2026-11-24.json`](slither-rescan-2026-11-24.json).
 
 ## Resolved findings
 
@@ -99,7 +101,7 @@ Each acceptance below is owned by DefiAudit0x and expires on 2027-05-21.
 <a id="accepted-8"></a>
 ### Entry 8: `src/SafeUupsVault.sol` / `controlled-delegatecall`
 
-**Location:** 52-71
+**Location:** 56-75
 
 **Verdict:** ACCEPT (High). The delegatecall is the defined UUPS upgrade-and-call behavior. The operation requires `onlyProxy`, `onlyOwner`, and a target that passes the proxiable UUID compatibility check; the residual risk is the documented trust in the owner. **Evidence:** unauthorized-upgrade tests in `test/UupsTakeover.t.sol` and the guards in `src/SafeUupsVault.sol`.
 

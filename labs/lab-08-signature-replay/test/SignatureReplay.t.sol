@@ -124,6 +124,27 @@ contract SignatureReplayTest is Test {
         assertEq(victim.balance, VAULT_FUNDING, "victim received five payouts from one signature");
     }
 
+    /// @notice Regression (m-12): replay repeats the fixed-size payout
+    ///         while funds suffice — it does not drain the vault
+    ///         completely unless the amounts line up. With 5.5 ETH funded
+    ///         and a 1 ETH authorization, five payouts succeed, the sixth
+    ///         fails, and 0.5 ETH remains.
+    function testVulnerableSignatureReplayStopsWhenFundsRunShort() public {
+        VulnerableSignature vault = new VulnerableSignature{value: 5.5 ether}(authority);
+        (uint8 v, bytes32 r, bytes32 s) = _signRawPayout(AUTHORITY_KEY, victim, PAYOUT);
+
+        for (uint256 i = 0; i < 5; i++) {
+            vault.withdraw(victim, PAYOUT, v, r, s);
+        }
+        assertEq(victim.balance, 5 ether, "five payouts must succeed");
+        assertEq(address(vault).balance, 0.5 ether, "0.5 ETH must remain");
+
+        vm.expectRevert("transfer failed");
+        vault.withdraw(victim, PAYOUT, v, r, s);
+        assertEq(address(vault).balance, 0.5 ether, "failed sixth payout must leave the remainder");
+        assertEq(victim.balance, 5 ether, "victim must receive nothing more");
+    }
+
     function testSafeSignaturePaysExactlyOnce() public {
         (uint8 v, bytes32 r, bytes32 s) = _signTypedPayout(AUTHORITY_KEY, safe, victim, PAYOUT);
 
@@ -183,11 +204,16 @@ contract SignatureReplayTest is Test {
     }
 
     function testSafeSignatureRejectsExpired() public {
+        // Preserve the original signed deadline: the test submits the
+        // deadline the authority actually signed, after it has passed,
+        // so the revert demonstrates expiration of that authorization
+        // directly rather than of a deadline invented at submit time.
+        uint256 deadline = block.timestamp + 1 hours;
         (uint8 v, bytes32 r, bytes32 s) = _signTypedPayout(AUTHORITY_KEY, safe, victim, PAYOUT);
 
         vm.warp(block.timestamp + 2 hours);
         vm.expectRevert(SafeSignature.SignatureExpired.selector);
-        safe.withdraw(victim, PAYOUT, block.timestamp - 1, v, r, s);
+        safe.withdraw(victim, PAYOUT, deadline, v, r, s);
 
         assertEq(victim.balance, 0, "nothing paid after the deadline");
     }
@@ -220,5 +246,91 @@ contract SignatureReplayTest is Test {
         assertEq(safe.nonces(victim), 0);
     }
 
+    function testSafeSignatureRejectsMalformedSignature() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _signTypedPayout(AUTHORITY_KEY, safe, victim, PAYOUT);
+
+        // Zeroed (v, r, s): ecrecover yields the zero address.
+        vm.expectRevert(SafeSignature.InvalidSignature.selector);
+        safe.withdraw(victim, PAYOUT, deadline, 0, bytes32(0), bytes32(0));
+
+        // A signature from the wrong key recovers a non-authority signer.
+        (uint8 wv, bytes32 wr, bytes32 ws) = _signTypedPayout(0xBADD, safe, victim, PAYOUT);
+        vm.expectRevert(SafeSignature.InvalidSignature.selector);
+        safe.withdraw(victim, PAYOUT, deadline, wv, wr, ws);
+
+        assertEq(safe.nonces(victim), 0, "malformed signatures must not consume the nonce");
+
+        // The valid signature still pays exactly once afterwards.
+        safe.withdraw(victim, PAYOUT, deadline, v, r, s);
+        assertEq(victim.balance, PAYOUT);
+        assertEq(safe.nonces(victim), 1);
+    }
+
+    function testSafeSignatureAcceptsAtExactDeadline() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _signTypedPayout(AUTHORITY_KEY, safe, victim, PAYOUT);
+
+        // At exactly the deadline the signature is still live: the check
+        // reverts only when block.timestamp > deadline.
+        vm.warp(deadline);
+        safe.withdraw(victim, PAYOUT, deadline, v, r, s);
+        assertEq(victim.balance, PAYOUT, "payout at the exact deadline must succeed");
+        assertEq(safe.nonces(victim), 1);
+    }
+
+    function testSafeSignatureRejectsOneSecondPastDeadline() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _signTypedPayout(AUTHORITY_KEY, safe, victim, PAYOUT);
+
+        vm.warp(deadline + 1);
+        vm.expectRevert(SafeSignature.SignatureExpired.selector);
+        safe.withdraw(victim, PAYOUT, deadline, v, r, s);
+        assertEq(victim.balance, 0, "nothing paid one second past the deadline");
+        assertEq(safe.nonces(victim), 0);
+    }
+
+    function testSafeSignatureReentrantReplayFails() public {
+        ReentrantReplayReceiver receiver = new ReentrantReplayReceiver(safe);
+        address recipient = address(receiver);
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _signTypedPayout(AUTHORITY_KEY, safe, recipient, PAYOUT);
+        receiver.armReplay(recipient, PAYOUT, deadline, v, r, s);
+
+        // The outer payout succeeds once; the nested replay inside the
+        // receive hook fails because the nonce was consumed before the
+        // transfer, so the replayed digest no longer matches.
+        safe.withdraw(recipient, PAYOUT, deadline, v, r, s);
+
+        assertTrue(receiver.replayAttempted(), "nested replay must have been attempted");
+        assertFalse(receiver.replaySucceeded(), "nested replay must fail");
+        assertEq(recipient.balance, PAYOUT, "exactly one payout");
+        assertEq(safe.nonces(recipient), 1);
+        assertEq(address(safe).balance, VAULT_FUNDING - PAYOUT);
+    }
+
     uint256 private constant SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+}
+
+/// @dev Receiver that tries to replay the exact same signature from inside
+///      its receive hook, while the outer payout is still in flight.
+contract ReentrantReplayReceiver {
+    SafeSignature internal immutable vault;
+    bytes public pendingCalldata;
+    bool public replayAttempted;
+    bool public replaySucceeded;
+
+    constructor(SafeSignature vault_) {
+        vault = vault_;
+    }
+
+    function armReplay(address recipient, uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external {
+        pendingCalldata = abi.encodeCall(SafeSignature.withdraw, (recipient, amount, deadline, v, r, s));
+    }
+
+    receive() external payable {
+        if (pendingCalldata.length == 0) return;
+        replayAttempted = true;
+        (replaySucceeded,) = address(vault).call(pendingCalldata);
+    }
 }

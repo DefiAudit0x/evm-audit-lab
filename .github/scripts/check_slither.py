@@ -181,7 +181,7 @@ ACCEPTED: dict[tuple[str, str, str], AcceptedFinding] = {
     (
         "src/SafeUupsVault.sol",
         "controlled-delegatecall",
-        "52-71",
+        "56-75",
     ): AcceptedFinding(
         reason="UUPS upgrade calls require proxy context, owner authorization, and UUID compatibility; see docs/slither-triage.md#accepted-8",
         owner="DefiAudit0x",
@@ -242,7 +242,13 @@ ACCEPTED: dict[tuple[str, str, str], AcceptedFinding] = {
 
 
 def attributed_paths(paths):
-    """Return each distinct source path associated with a finding."""
+    """Return each distinct source path associated with a finding.
+
+    This is the single shared policy-attribution entry point for both
+    this gate and audit_report.py: callers must pass paths from the
+    structured source mappings only. A Slither `first_markdown_element`
+    anchor is display-only and must never be passed here (m-22).
+    """
     return tuple(dict.fromkeys(paths))
 
 def unique_object(pairs):
@@ -297,26 +303,14 @@ class SiteFinding:
         return f"{self.start_line}-{self.end_line}"
 
 
-_ANCHOR_RANGE = re.compile(r"^L?([1-9][0-9]*)(?:-L?([1-9][0-9]*))?$")
-
-
-def _anchor_span(anchor, path: str) -> tuple[int, int] | None:
-    """Line range from a Slither first_markdown_element anchor naming path."""
-    if not isinstance(anchor, str) or "#" not in anchor:
-        return None
-    filename, _, fragment = anchor.partition("#")
-    if _safe_relative_source(filename) != path:
-        return None
-    match = _ANCHOR_RANGE.fullmatch(fragment)
-    if match is None:
-        return None
-    start = int(match.group(1))
-    end = int(match.group(2) or match.group(1))
-    return (start, end) if end >= start else None
-
-
 def _site_span(det: dict, path: str) -> tuple[int, int] | None:
-    """Line range of the first element attributed to path, else the anchor."""
+    """Line range of the first element attributed to path, else None.
+
+    Only the structured source mapping supplies a span. The Markdown
+    anchor is display-only (m-22): its line range must not satisfy a
+    triage entry, so a site with no mapped lines has no span and can
+    never match an exception.
+    """
     for element in det.get("elements", []):
         mapping = element.get("source_mapping") if isinstance(element, dict) else None
         filename = mapping.get("filename_relative") if isinstance(mapping, dict) else None
@@ -329,7 +323,7 @@ def _site_span(det: dict, path: str) -> tuple[int, int] | None:
             and all(type(n) is int and n > 0 for n in lines)
         ):
             return min(lines), max(lines)
-    return _anchor_span(det.get("first_markdown_element"), path)
+    return None
 
 
 def triage_findings(findings, accepted=None, today=None):

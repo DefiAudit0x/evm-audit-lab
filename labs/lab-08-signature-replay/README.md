@@ -38,7 +38,8 @@ One signature intended to pay 1 ETH paid out the entire 5 ETH reserve. Two
 variants make it worse in the wild:
 
 - **Cross-contract replay** — any *other* protocol that hashes the same
-  `(recipient, amount)` layout accepts the identical signature.
+  `(recipient, amount)` layout, trusts the same signer as its authority,
+  and accepts the same signature scheme accepts the identical signature.
 - **Malleability** — flipping `(v, s)` to the other curve point yields a
   byte-different signature that recovers the *same* authority address,
   defeating naive "seen this exact signature before" dedup.
@@ -53,7 +54,7 @@ forge test --match-contract SignatureReplayTest --match-test testVulnerableSigna
 
 | Severity | Conditions | Outcome |
 | --- | --- | --- |
-| **Critical** | Value transfers authorized by ECDSA signatures that are not bound to a nonce/chain/contract, with no consumed-signature record | One observed signature drains the entire vault; the same signature may also drain any other contract reusing the message layout |
+| **Critical** | Value transfers authorized by ECDSA signatures that are not bound to a nonce/chain/contract, with no consumed-signature record | One observed signature repeats its fixed-size payout while funds suffice and the recipient accepts payment; complete depletion requires suitable amounts. The same signature may also drain any other contract reusing the message layout, trusting the same signer, and accepting the same signature scheme |
 
 ## Remediation
 

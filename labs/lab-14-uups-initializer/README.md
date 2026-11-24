@@ -64,4 +64,8 @@ already initialized and the implementation is locked. A non-owner's upgrade
 to a UUID-compatible implementation reverts with `not owner`, leaving the
 proxy's implementation slot and balance unchanged.
 
+The UUID check verifies identity only: a target that returns the expected
+UUID passes the check even with an incompatible storage layout, so layout
+compatibility needs separate validation before any upgrade.
+
 Companion report: [Audit-Reports/010 — Uninitialized UUPS Proxy Takeover](https://github.com/DefiAudit0x/Audit-Reports/blob/main/010-unprotected-uups-initializer.md).

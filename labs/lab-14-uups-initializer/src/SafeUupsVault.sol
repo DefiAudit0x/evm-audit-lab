@@ -43,7 +43,11 @@ contract SafeUupsVault {
         _;
     }
 
-    /// @dev Only implementations may advertise compatibility. A proxy must not pass this check.
+    /// @dev Only implementations may advertise their UUID. A proxy must not pass this check.
+    ///      The upgrade check compares the advertised UUID only: it verifies
+    ///      identity, not storage-layout or behavioral compatibility. A target
+    ///      that returns the expected UUID passes even with a different layout,
+    ///      so layout compatibility needs separate validation before upgrading.
     function proxiableUUID() external view returns (bytes32) {
         require(address(this) == SELF, "delegated UUID");
         return IMPLEMENTATION_SLOT;

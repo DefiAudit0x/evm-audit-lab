@@ -7,7 +7,7 @@
 - **Asset at risk:** the splitter's entire revenue balance — frozen, not stolen.
 - **Privileged actor:** none — `register()` and `distribute()` are both permissionless.
 - **Untrusted actor:** any address able to register payees; a batch of 3,000 registrations costs a few dollars of gas.
-- **Preconditions:** gas per payee times list length exceeds the block gas limit (~34k gas × ~1,200 payees at a 30M budget in this lab).
+- **Preconditions:** gas per payee times list length exceeds the block gas limit (~17,000 gas × ~1,768 payees at a 30M budget in this lab — measured: 1,767 payees still distribute, 1,768 revert out of gas).
 
 ## Violated invariant
 
@@ -23,7 +23,7 @@ function register() external payable {
 
 function distribute() external {
     uint256 n = payees.length;      // cost scales with global state
-    for (uint256 i = 0; i < n; ++i) { /* ~34k gas per funded payee */ }
+    for (uint256 i = 0; i < n; ++i) { /* ~17k gas per funded payee */ }
 }
 ```
 
@@ -46,9 +46,11 @@ into that payee's claim ledger. `distribute(maxPayees)` makes no external
 calls, accepts batches from 1 through 256, and can be resumed with its
 persisted cursor. Each payee later withdraws independently with `claim()`
 or `withdrawTo()`. A failed claim leaves the liability intact and cannot
-stop another payee from claiming. Each withdrawal transfer is capped at
-30,000 gas; a recipient that cannot receive ETH within that cap can redirect
-its claim with `withdrawTo()`.
+stop another payee from claiming. Each withdrawal transfer requests
+30,000 gas for the call; the EVM adds the 2,300-gas value-transfer
+stipend on top, so a recipient observes over 32,000 gas on entry
+(measured: 32,243). A recipient that cannot receive ETH within that
+budget can redirect its claim with `withdrawTo()`.
 
 Registration requires a positive value. Each address is added to the payee
 list once, even after its current balance has been claimed.

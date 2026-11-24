@@ -91,12 +91,40 @@ contract SandwichTest is Test {
         uint256 fairOut = vulnerable.getAmountOut(VICTIM_IN, LP_A, LP_B);
 
         // 1. Attacker front-runs the victim.
+        uint256 attackerBalanceBBefore = tokenB.balanceOf(address(this));
         uint256 attackerPosition = vulnerable.swap(ATTACKER_IN, true);
+        // The front-run must deliver exactly the returned amount in token B.
+        assertEq(
+            tokenB.balanceOf(address(this)) - attackerBalanceBBefore,
+            attackerPosition,
+            "front-run token-B delivery must match the returned amount"
+        );
         // 2. Victim lands at the moved price.
+        uint256 victimBalanceBBefore = tokenB.balanceOf(victim);
         vm.prank(victim);
         uint256 victimOut = vulnerable.swap(VICTIM_IN, true);
+        // The victim must receive exactly the returned amount in token B.
+        assertEq(
+            tokenB.balanceOf(victim) - victimBalanceBBefore,
+            victimOut,
+            "victim token-B delivery must match the returned amount"
+        );
         // 3. Attacker back-runs their exact sandwich position.
+        uint256 attackerBalanceABefore = tokenA.balanceOf(address(this));
+        uint256 attackerBalanceBBeforeBackRun = tokenB.balanceOf(address(this));
         uint256 backRunOut = vulnerable.swap(attackerPosition, false);
+        // The back-run must deliver exactly the returned amount in token A
+        // and spend exactly the front-run position in token B.
+        assertEq(
+            tokenA.balanceOf(address(this)) - attackerBalanceABefore,
+            backRunOut,
+            "back-run token-A delivery must match the returned amount"
+        );
+        assertEq(
+            attackerBalanceBBeforeBackRun - tokenB.balanceOf(address(this)),
+            attackerPosition,
+            "back-run must spend the whole front-run position in token B"
+        );
 
         // Victim lost ~54% to the sandwich.
         assertLt(victimOut, fairOut, "victim must receive less than fair");
@@ -105,6 +133,31 @@ contract SandwichTest is Test {
         // Attacker closed the round trip in profit.
         assertGt(backRunOut, ATTACKER_IN, "sandwich must be profitable");
         assertGt(tokenA.balanceOf(address(this)), ATTACKER_IN);
+    }
+
+    /// @notice Regression (m-10): not every sandwich is profitable. A 50 A
+    ///         front-run against a 0.001 A victim trade in the 100/100 pool
+    ///         loses ~0.1995 A before gas — the victim's trade is too small
+    ///         to pay for the attacker's round trip through the 0.3% fee.
+    function testLargeFrontRunAgainstTinyVictimTradeLosesMoney() public {
+        uint256 attackerBalanceBefore = tokenA.balanceOf(address(this));
+
+        uint256 frontRunOut = vulnerable.swap(50 ether, true);
+
+        address tinyVictim = makeAddr("tiny-victim");
+        tokenA.mint(tinyVictim, 0.001 ether);
+        vm.prank(tinyVictim);
+        tokenA.approve(address(vulnerable), type(uint256).max);
+        vm.prank(tinyVictim);
+        uint256 victimOut = vulnerable.swap(0.001 ether, true);
+        assertGt(victimOut, 0, "victim still receives a nonzero output");
+
+        vulnerable.swap(frontRunOut, false);
+
+        uint256 attackerBalanceAfter = tokenA.balanceOf(address(this));
+        assertLt(attackerBalanceAfter, attackerBalanceBefore, "round trip must lose money");
+        uint256 loss = attackerBalanceBefore - attackerBalanceAfter;
+        assertApproxEqAbs(loss, 199546488127281127, 1e12, "attacker loss must match the documented ~0.1995 A");
     }
 
     function testSafeAmmBlocksSandwich() public {
