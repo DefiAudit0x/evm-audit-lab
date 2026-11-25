@@ -1,4 +1,4 @@
-"""Regression cases for PR #6 detector review (Fixes 161–165)."""
+"""Regression cases for PR #6 detector review (Fixes 161–167)."""
 from pathlib import Path
 import unittest
 
@@ -122,3 +122,59 @@ class Fix165Tests(unittest.TestCase):
         contract = next(contract_blocks(PATH, source))
         layout = storage_collision._resolved_storage_layout(contract, {contract.name: contract})
         self.assertEqual(layout[1], ('uint256', 5000, 0, (1,)))
+
+
+class Fix166Tests(unittest.TestCase):
+    def test_final_tuple_target_invalidates_join_proof(self):
+        for name in ('minted', 'shares'):
+            body = f'''if (seed) {{ {name} = 1; }} else {{ {name} = 2; }}
+                (fee, {name}) = (0, 0);
+                balances[msg.sender] += {name};
+                return assets * totalShares / totalAssets;'''
+            with self.subTest(name=name):
+                self.assertTrue(precision._written_between(
+                    body, body.index('(fee'), len(body), name, include_indexed=False))
+                self.assertEqual(len(mint_findings(body)), 1)
+
+    def test_indexed_tuple_target_still_ignored(self):
+        statement = '(shares[ownerOf(id)], fee) = values();'
+        self.assertFalse(precision._written_between(
+            statement, 0, len(statement), 'shares', include_indexed=False))
+
+    def test_nested_scalar_tuple_target_still_detected(self):
+        statement = '(fee, (minted, other)) = values();'
+        self.assertTrue(precision._written_between(
+            statement, 0, len(statement), 'minted', include_indexed=False))
+
+
+class Fix167Tests(unittest.TestCase):
+    def check_credit(self, suffix, expected, *, arm=False):
+        sequence = f'''minted = assets * totalShares / totalAssets;
+            balances[msg.sender] += minted; {suffix}'''
+        body = (f'if (seed) {{ {sequence} }} else {{ minted = 1; }} return minted;'
+                if arm else sequence + ' return minted;')
+        self.assertEqual(len(mint_findings(body)), expected)
+
+    def test_later_guard_covers_credit(self):
+        self.check_credit('require(minted > 0);', 0)
+
+    def test_arm_later_guard_covers_credit(self):
+        self.check_credit('require(minted > 0);', 0, arm=True)
+
+    def test_positive_overwrite_does_not_cover_credit(self):
+        self.check_credit('minted = 1;', 1)
+
+    def test_arm_positive_overwrite_does_not_cover_credit(self):
+        self.check_credit('minted = 1;', 1, arm=True)
+
+    def test_other_guard_does_not_cover_credit(self):
+        self.check_credit('require(shares > 0);', 1)
+
+    def test_arm_other_guard_does_not_cover_credit(self):
+        self.check_credit('require(shares > 0);', 1, arm=True)
+
+    def test_overwrite_then_guard_does_not_cover_credit(self):
+        self.check_credit('minted = 0; require(minted > 0);', 1)
+
+    def test_arm_overwrite_then_guard_does_not_cover_credit(self):
+        self.check_credit('minted = 0; require(minted > 0);', 1, arm=True)

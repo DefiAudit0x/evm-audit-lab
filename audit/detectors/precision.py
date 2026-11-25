@@ -147,7 +147,7 @@ def _written_between(code: str, start: int, end: int, name: str, *, include_inde
             elif window[index] == "(":
                 depth -= 1
                 if depth == 0:
-                    lhs = window[index:assignment.start()]
+                    lhs = window[index:assignment.start() + 1]
                     # Only scalar tuple targets invalidate a scalar proof.
                     # A name inside an index or index-call is merely read.
                     brackets = 0
@@ -226,14 +226,18 @@ def _branch_covers_mint(
 ) -> bool:
     """True when an arm guarantees a positive mint at its end."""
     covered: set[str] = set()
-    # A later positive overwrite cannot repair an already unproved credit.
-    uncovered_credit = False
+    # A reverting guard can validate an earlier credit only until its scalar changes.
+    uncovered_credit: set[str] = set()
+    overwritten_credit: set[str] = set()
     for statement, stmt_start in _top_level_statements(branch):
-        if _mint_credit_names(statement) - covered:
-            uncovered_credit = True
+        uncovered_credit.update(_mint_credit_names(statement) - covered)
+        written = {name for name in ("minted", "shares")
+                   if _written_between(statement, 0, len(statement), name, include_indexed=False)}
+        overwritten_credit.update(uncovered_credit & written)
         proven = {name for name in ("minted", "shares")
                   if _positive_guard_in_statement(statement, name)}
         if proven:
+            uncovered_credit.difference_update(proven - overwritten_credit)
             covered.update(proven)
             continue
         match = re.fullmatch(r"\s*(minted|shares)\s*=\s*([\w.]+|\d+)\s*;", statement)
@@ -260,9 +264,7 @@ def _branch_covers_mint(
             continue
         # Writes in a nested conditional are still possible on the arm's
         # path and therefore invalidate an earlier proof.
-        for name in ("minted", "shares"):
-            if _written_between(statement, 0, len(statement), name, include_indexed=False):
-                covered.discard(name)
+        covered.difference_update(written)
     return required_names <= covered and not uncovered_credit
 
 def _last_consumer_end(body: str, stmt_end: int) -> int:
@@ -306,16 +308,20 @@ def _body_has_zero_mint_guard(body: str) -> bool:
     if not required_names:
         required_names = set(re.findall(r"\b(minted|shares)\s*=(?!=)", body))
     guarded: set[str] = set()
-    # A later positive overwrite cannot repair an already unproved credit.
-    uncovered_credit = False
+    # A reverting guard can validate an earlier credit only until its scalar changes.
+    uncovered_credit: set[str] = set()
+    overwritten_credit: set[str] = set()
     for statement, stmt_start in _top_level_statements(body):
         if stmt_start >= consumer_end:
             break
-        if _mint_credit_names(statement) - guarded:
-            uncovered_credit = True
+        uncovered_credit.update(_mint_credit_names(statement) - guarded)
+        written = {name for name in ("minted", "shares")
+                   if _written_between(statement, 0, len(statement), name, include_indexed=False)}
+        overwritten_credit.update(uncovered_credit & written)
         proven = {name for name in ("minted", "shares")
                   if _positive_guard_in_statement(statement, name)}
         if proven:
+            uncovered_credit.difference_update(proven - overwritten_credit)
             guarded.update(proven)
             continue
         constant = re.fullmatch(r"\s*(minted|shares)\s*=\s*(\d+)\s*;", statement)
@@ -325,9 +331,7 @@ def _body_has_zero_mint_guard(body: str) -> bool:
             if int(value) > 0:
                 guarded.add(name)
             continue
-        for name in ("minted", "shares"):
-            if _written_between(statement, 0, len(statement), name, include_indexed=False):
-                guarded.discard(name)
+        guarded.difference_update(written)
     if required_names <= guarded and not uncovered_credit:
         return True
     # An if/else is exhaustive only when both arms prove a positive mint.
