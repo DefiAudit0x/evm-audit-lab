@@ -178,3 +178,41 @@ class Fix167Tests(unittest.TestCase):
 
     def test_arm_overwrite_then_guard_does_not_cover_credit(self):
         self.check_credit('minted = 0; require(minted > 0);', 1, arm=True)
+
+
+class Fix168Tests(unittest.TestCase):
+    def test_each_arm_proves_its_own_credited_scalar(self):
+        body = '''require(assets > 0);
+            if (empty) {
+                minted = assets;
+                balances[msg.sender] += minted;
+            } else {
+                shares = assets * totalShares / totalAssets;
+                require(shares > 0);
+                balances[msg.sender] += shares;
+            }'''
+        self.assertEqual(mint_findings(body), [])
+
+    def test_arm_must_prove_its_own_credit(self):
+        body = '''require(assets > 0);
+            if (empty) {
+                minted = assets;
+                balances[msg.sender] += minted;
+            } else {
+                shares = assets * totalShares / totalAssets;
+                balances[msg.sender] += shares;
+            }'''
+        self.assertEqual(len(mint_findings(body)), 1)
+
+    def test_post_join_consumer_requires_each_arm_credit(self):
+        body = '''require(assets > 0);
+            if (empty) {
+                minted = assets;
+                balances[msg.sender] += minted;
+            } else {
+                shares = assets * totalShares / totalAssets;
+                require(shares > 0);
+                balances[msg.sender] += shares;
+            }
+            return minted;'''
+        self.assertEqual(len(mint_findings(body)), 1)

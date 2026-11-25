@@ -338,11 +338,36 @@ def _body_has_zero_mint_guard(body: str) -> bool:
     for arms, else_body, else_start, stmt_end in _top_level_if_else_branches(body):
         if else_body is None:
             continue
-        paths = [
-            _branch_covers_mint(arm_body, top_guard_pairs, arm_start, body, required_names)
-            for arm_body, arm_start in arms
-        ]
-        paths.append(_branch_covers_mint(else_body, top_guard_pairs, else_start, body, required_names))
+        post_join_required = set().union(*(
+            _mint_credit_names(statement)
+            for statement, stmt_start in _top_level_statements(body)
+            if stmt_start >= stmt_end and stmt_start < consumer_end
+        ))
+        branch_credit_names = set().union(*(
+            _mint_credit_names(statement)
+            for arm_body, _ in [*arms, (else_body, else_start)]
+            for statement, _ in _top_level_statements(arm_body)
+        ))
+        for statement, stmt_start in _top_level_statements(body):
+            if stmt_start < stmt_end or stmt_start >= consumer_end:
+                continue
+            if not _TOP_LEVEL_WRITE.match(statement):
+                post_join_required.update(
+                    name for name in branch_credit_names
+                    if re.search(rf"\b{re.escape(name)}\b(?!\s*\[)", statement)
+                )
+        paths = []
+        for arm_body, arm_start in [*arms, (else_body, else_start)]:
+            arm_required = set().union(*(
+                _mint_credit_names(statement)
+                for statement, _ in _top_level_statements(arm_body)
+            ))
+            if not arm_required:
+                arm_required = set(re.findall(r"\b(minted|shares)\s*=(?!=)", arm_body))
+            paths.append(_branch_covers_mint(
+                arm_body, top_guard_pairs, arm_start, body,
+                arm_required | post_join_required,
+            ))
         if not all(paths):
             continue
         consumer_end = _last_consumer_end(body, stmt_end)
