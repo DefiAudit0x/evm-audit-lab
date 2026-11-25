@@ -892,7 +892,7 @@ class DetectorTests(unittest.TestCase):
             'require(minted > 0 && totalAssets > 0, "zero shares");',
             "assert(minted > 0 && totalShares > 0);",
             'require((minted > 0), "zero shares");',
-            "assert((shares > 0));",
+            "assert((minted > 0));",
             # Doubly parenthesised comparisons still enforce.
             'require(((minted > 0)), "zero shares");',
             # `== true` preserves the guard (the wrapper rule).

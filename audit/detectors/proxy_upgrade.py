@@ -70,16 +70,19 @@ def _assigned_between(body: str, start: int, end: int, name: str) -> bool:
     window = body[start:end]
     if re.search(rf"\b{re.escape(name)}\s*=(?!=)", window):
         return True
-    # Walk assignment operators and inspect the complete statement LHS. This
-    # handles nested tuple LHS forms such as `((compatible, uuid), x) = ...`
-    # that a `[^()]*` regex cannot represent.
-    for assignment in re.finditer(r"(?<![=!<>])=(?!=)", window):
-        lhs_start = max(window.rfind(";", 0, assignment.start()),
-                        window.rfind("{", 0, assignment.start()),
-                        window.rfind("}", 0, assignment.start())) + 1
-        lhs = window[lhs_start:assignment.start()]
-        if "(" in lhs and re.search(rf"\b{re.escape(name)}\b", lhs):
-            return True
+    # A tuple assignment ends its target with ')'. Balance backwards to
+    # its opening '(' so control conditions before the target are excluded.
+    for assignment in re.finditer(r"\)\s*=(?!=)", window):
+        depth = 0
+        for index in range(assignment.start(), -1, -1):
+            if window[index] == ")":
+                depth += 1
+            elif window[index] == "(":
+                depth -= 1
+                if depth == 0:
+                    if re.search(rf"\b{re.escape(name)}\b", window[index:assignment.start()]):
+                        return True
+                    break
     return re.search(
         rf"\b{re.escape(name)}\s*(?:\[[^\]]*\])+\s*(?:=(?!=)|[+\-*/%&|^]=|<<=|>>=)",
         window,

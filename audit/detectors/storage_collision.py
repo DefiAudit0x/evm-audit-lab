@@ -301,7 +301,7 @@ def _slot_span(kind) -> int:
     """Exact whole-slot span for aggregate values in a resolved layout.
 
     Struct members pack within their struct, and fixed arrays of packable
-    scalar elements pack across element boundaries. Aggregate boundaries
+    scalar elements pack whole elements within each slot. Aggregate boundaries
     are rounded to a whole slot, as required by Solidity storage layout.
     """
     if isinstance(kind, tuple):
@@ -312,7 +312,8 @@ def _slot_span(kind) -> int:
             count = int(length)
             size = _storage_type_size(element) if not isinstance(element, tuple) else 32
             if size < 32:
-                return (count * size + 31) // 32
+                per_slot = 32 // size
+                return (count + per_slot - 1) // per_slot
             return count * _slot_span(element)
         slot = offset = 0
         for member in kind:
