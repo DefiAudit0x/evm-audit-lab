@@ -25,12 +25,13 @@ jobs:
         with:
           version: v${{ env.FOUNDRY_VERSION }}
 
-      - name: Install Slither (pinned)
-        run: pipx install "slither-analyzer==0.11.6"
       - name: Set up Python
         uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d
         with:
           python-version-file: .python-version
+
+      - name: Install Slither (pinned)
+        run: pipx install --python "$(command -v python)" "slither-analyzer==0.11.6"
 
       - name: Test audit reporting
         run: python3 -B -m unittest discover -s .github/scripts -p test_audit_report.py
