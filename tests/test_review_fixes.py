@@ -1,4 +1,4 @@
-"""Regression cases for PR #6 detector review (Fixes 161–167)."""
+"""Regression cases for PR #6 detector review (Fixes 161–170)."""
 from pathlib import Path
 import unittest
 
@@ -204,6 +204,7 @@ class Fix168Tests(unittest.TestCase):
             }'''
         self.assertEqual(len(mint_findings(body)), 1)
 
+
     def test_post_join_consumer_requires_each_arm_credit(self):
         body = '''require(assets > 0);
             if (empty) {
@@ -215,4 +216,58 @@ class Fix168Tests(unittest.TestCase):
                 balances[msg.sender] += shares;
             }
             return minted;'''
+        self.assertEqual(len(mint_findings(body)), 1)
+
+
+class Fix169Tests(unittest.TestCase):
+    def test_post_join_return_without_branch_credit_requires_proof(self):
+        for name in ('minted', 'shares'):
+            with self.subTest(name=name):
+                body = f'''uint256 {name} = assets * totalShares / totalAssets;
+                    if (totalShares == 0) {{ {name} = 1; }}
+                    else {{ totalAssets += assets; }}
+                    return {name};'''
+                self.assertEqual(len(mint_findings(body)), 1)
+
+    def test_arm_can_guard_post_join_scalar_without_crediting_it(self):
+        body = '''minted = assets * totalShares / totalAssets;
+            if (totalShares == 0) { minted = 1; }
+            else { require(minted > 0); totalAssets += assets; }
+            return minted;'''
+        self.assertEqual(mint_findings(body), [])
+
+
+class Fix170Tests(unittest.TestCase):
+    def check_prefix_credit(self, then_body, else_body, expected):
+        body = f'''minted = assets * totalShares / totalAssets;
+            balances[msg.sender] += minted;
+            if (assets > 1) {{ {then_body} }}
+            else {{ {else_body} }}'''
+        self.assertEqual(len(mint_findings(body)), expected)
+
+    def test_unrelated_chain_does_not_cover_prefix_credit(self):
+        self.check_prefix_credit('totalAssets += assets;', 'totalAssets += 1;', 1)
+
+    def test_both_arms_guard_prefix_credit(self):
+        self.check_prefix_credit('require(minted > 0);', 'require(minted > 0);', 0)
+
+    def test_one_arm_guard_does_not_cover_prefix_credit(self):
+        for guarded_then in (False, True):
+            with self.subTest(guarded_then=guarded_then):
+                guard, unrelated = 'require(minted > 0);', 'totalAssets += 1;'
+                self.check_prefix_credit(
+                    guard if guarded_then else unrelated,
+                    unrelated if guarded_then else guard, 1)
+
+    def test_arm_constant_overwrite_does_not_cover_prefix_credit(self):
+        for tail in ('minted = 1;', 'minted = 1; require(minted > 0);'):
+            with self.subTest(tail=tail):
+                self.check_prefix_credit(tail, tail, 1)
+
+    def test_prefix_overwrite_cannot_be_validated_by_arm_guards(self):
+        body = '''minted = assets * totalShares / totalAssets;
+            balances[msg.sender] += minted;
+            minted = 1;
+            if (assets > 1) { require(minted > 0); }
+            else { require(minted > 0); }'''
         self.assertEqual(len(mint_findings(body)), 1)

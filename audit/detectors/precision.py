@@ -223,12 +223,14 @@ def _branch_covers_mint(
     branch_start: int,
     deposit_code: str,
     required_names: set[str],
+    prefix_credit: set[str] | None = None,
+    overwritten_prefix_credit: set[str] | None = None,
 ) -> bool:
     """True when an arm guarantees a positive mint at its end."""
     covered: set[str] = set()
     # A reverting guard can validate an earlier credit only until its scalar changes.
-    uncovered_credit: set[str] = set()
-    overwritten_credit: set[str] = set()
+    uncovered_credit = set(prefix_credit or ())
+    overwritten_credit = set(overwritten_prefix_credit or ())
     for statement, stmt_start in _top_level_statements(branch):
         uncovered_credit.update(_mint_credit_names(statement) - covered)
         written = {name for name in ("minted", "shares")
@@ -311,9 +313,13 @@ def _body_has_zero_mint_guard(body: str) -> bool:
     # A reverting guard can validate an earlier credit only until its scalar changes.
     uncovered_credit: set[str] = set()
     overwritten_credit: set[str] = set()
+    prefix_credit_states = {}
     for statement, stmt_start in _top_level_statements(body):
+        prefix_credit_states[stmt_start + len(statement)] = (
+            uncovered_credit.copy(), overwritten_credit.copy(),
+        )
         if stmt_start >= consumer_end:
-            break
+            continue
         uncovered_credit.update(_mint_credit_names(statement) - guarded)
         written = {name for name in ("minted", "shares")
                    if _written_between(statement, 0, len(statement), name, include_indexed=False)}
@@ -343,19 +349,20 @@ def _body_has_zero_mint_guard(body: str) -> bool:
             for statement, stmt_start in _top_level_statements(body)
             if stmt_start >= stmt_end and stmt_start < consumer_end
         ))
-        branch_credit_names = set().union(*(
-            _mint_credit_names(statement)
-            for arm_body, _ in [*arms, (else_body, else_start)]
-            for statement, _ in _top_level_statements(arm_body)
-        ))
         for statement, stmt_start in _top_level_statements(body):
             if stmt_start < stmt_end or stmt_start >= consumer_end:
                 continue
             if not _TOP_LEVEL_WRITE.match(statement):
                 post_join_required.update(
-                    name for name in branch_credit_names
+                    name for name in ("minted", "shares")
                     if re.search(rf"\b{re.escape(name)}\b(?!\s*\[)", statement)
                 )
+        # The first arm ends the top-level `if` statement. Preserve the
+        # credit state from before that statement, not from after the join.
+        first_body, first_start = arms[0]
+        prefix_credit, overwritten_prefix_credit = prefix_credit_states.get(
+            first_start + len(first_body) + 1, (set(), set()),
+        )
         paths = []
         for arm_body, arm_start in [*arms, (else_body, else_start)]:
             arm_required = set().union(*(
@@ -366,7 +373,8 @@ def _body_has_zero_mint_guard(body: str) -> bool:
                 arm_required = set(re.findall(r"\b(minted|shares)\s*=(?!=)", arm_body))
             paths.append(_branch_covers_mint(
                 arm_body, top_guard_pairs, arm_start, body,
-                arm_required | post_join_required,
+                arm_required | post_join_required | prefix_credit,
+                prefix_credit, overwritten_prefix_credit,
             ))
         if not all(paths):
             continue
