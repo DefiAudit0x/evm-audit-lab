@@ -519,7 +519,9 @@ class AuditTests(unittest.TestCase):
                 "error": "compile failed",
                 "results": {"detectors": []},
             },
-            {"success": True, "results": {}},
+            {"success": True, "results": None},
+            *({"success": True, "results": {"detectors": value}}
+              for value in (None, {}, "", 1)),
             raw(
                 {
                     "check": "x",
@@ -562,6 +564,9 @@ class AuditTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(a.AuditError):
                     a.parse_findings(value, ROOT)
+
+    def test_omitted_detectors_are_empty(self):
+        self.assertEqual(a.parse_findings({"success": True, "results": {}}, ROOT), [])
 
     def test_empty_success_still_checks_required(self):
         result = self.build(

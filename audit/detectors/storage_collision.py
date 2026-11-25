@@ -298,20 +298,56 @@ def _leaf_count(kind) -> int:
 
 
 def _slot_span(kind) -> int:
-    """Upper bound on the slots one value of a resolved type occupies.
+    """Exact whole-slot span for aggregate values in a resolved layout.
 
-    Scalars take one slot; structs sum their members; a fixed array
-    multiplies its element span; a dynamic array takes one slot. The bound
-    over-estimates when small-type elements pack (e.g. `uint128[4]` is
-    2 slots, not 4); comparisons are relative between two layouts, so the
-    over-estimate cannot mask a change.
+    Struct members pack within their struct, and fixed arrays of packable
+    scalar elements pack across element boundaries. Aggregate boundaries
+    are rounded to a whole slot, as required by Solidity storage layout.
     """
     if isinstance(kind, tuple):
         if kind and kind[0] == "array":
             _, element, length = kind
-            return int(length) * _slot_span(element) if length else 1
-        return sum(_slot_span(member) for member in kind)
+            if not length:
+                return 1
+            count = int(length)
+            size = _storage_type_size(element) if not isinstance(element, tuple) else 32
+            if size < 32:
+                return (count * size + 31) // 32
+            return count * _slot_span(element)
+        slot = offset = 0
+        for member in kind:
+            if isinstance(member, tuple):
+                slot += bool(offset)
+                offset = 0
+                slot += _slot_span(member)
+                continue
+            size = _storage_type_size(member)
+            if size == 32:
+                slot += bool(offset)
+                offset = 0
+                slot += 1
+                continue
+            if offset + size > 32:
+                slot += bool(offset)
+                offset = 0
+            offset += size
+            if offset == 32:
+                slot += 1
+                offset = 0
+        return slot + bool(offset)
     return 1
+
+
+def _storage_type_size(kind) -> int:
+    integer = re.fullmatch(r"u?int(\d+)", kind)
+    fixed_bytes = re.fullmatch(r"bytes(\d+)", kind)
+    return (
+        int(integer[1]) // 8 if integer else
+        int(fixed_bytes[1]) if fixed_bytes else
+        20 if kind in ("address", "address payable") else
+        1 if kind == "bool" else
+        32
+    )
 
 
 # Total leaf entries array expansion may materialize per layout. The check
@@ -376,15 +412,10 @@ def _resolved_storage_layout(contract, by_name):
                             budget[0] -= total
                             members, end = flatten([element] * count, slot, path, budget)
                         else:
-                            # Do not materialize huge fixed arrays: one
-                            # descriptor entry, advancing the cursor by the
-                            # slot span of a single element times the length.
-                            # That span is a conservative over-estimate:
-                            # elements of small types may pack across element
-                            # boundaries (e.g. uint128[4] occupies 2 slots).
-                            # Comparisons are relative between two layouts,
-                            # so the over-estimate cannot mask a change.
-                            members, end = [(kind, slot, 0, path)], slot + _slot_span(element) * count
+                            # Keep large fixed arrays compact, but use their
+                            # exact packed span so following fields retain
+                            # their true slot positions.
+                            members, end = [(kind, slot, 0, path)], slot + _slot_span(kind)
                     else:
                         members, end = [(kind, slot, 0, path)], slot + 1
                 else:

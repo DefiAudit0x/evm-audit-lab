@@ -7,8 +7,10 @@
 # v1.9.5, v1.9.6, v1.10.0, v1.11.0 by content hash of src/Test.sol), so no
 # upstream SHA is claimed here. Do NOT write the evm-audit-lab HEAD here.
 #
-# Content identity of the vendored tree (git tree hash, stable across
-# checkouts; recompute with `git rev-parse HEAD:lib/forge-std`):
-forge-std-tree: e108703b9c44bff747b3689c3599c0c838e480db
+# Content identity of the vendored Solidity sources (git tree hash, stable
+# across checkouts; recompute with `git rev-parse HEAD:lib/forge-std/src`).
+# Hash only src/ to exclude this record: hashing lib/forge-std would include
+# the recorded hash itself, so updating the record would change that hash.
+forge-std-src-tree: 5eed4408865c071edbf938e1b7919c9fcd2de623
 vendored-at: ccac0a749bdb776c357a1c49a9c40ca39f00865d
 upstream-commit: unknown (not a release tag)

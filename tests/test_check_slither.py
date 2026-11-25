@@ -62,6 +62,27 @@ def report(*extras, safe_sources=None):
 
 
 class SlitherGateTests(unittest.TestCase):
+    def test_omitted_detectors_are_empty(self):
+        body = report()
+        del body["results"]["detectors"]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            path.write_text(json.dumps(body))
+            findings, sources = GATE["read_report"](str(path))
+        self.assertEqual(findings, [])
+        self.assertTrue(sources)
+        # Empty findings must still fail the required-detection policy.
+        self.assert_gate(body, 1, "no longer fires")
+
+    def test_slither_install_uses_configured_python(self):
+        workflow = (SCRIPT.parents[1] / "workflows/slither.yml").read_text()
+        setup = workflow.index("- name: Set up Python")
+        install = workflow.index("- name: Install Slither (pinned)")
+        self.assertLess(setup, install)
+        step = workflow[install:].split("\n      - name:", 1)[0]
+        self.assertIn('--python "$(command -v python)"', step)
+        self.assertIn("python-version-file: .python-version", workflow[setup:install])
+
     def assert_gate(self, body, status, message):
         if not isinstance(body, bytes):
             body = json.dumps(body).encode()
@@ -304,6 +325,8 @@ class SlitherGateTests(unittest.TestCase):
             ([], "report must be an object"),
             (report() | {"results": None}, "results.detectors must be a list"),
             (report() | {"results": {"detectors": {}}}, "results.detectors must be a list"),
+            *((report() | {"results": {"detectors": value}}, "results.detectors must be a list")
+              for value in (None, "", 1)),
             (report(None), "must be an object"),
             (report(detector("test", "Unknown", "src/SafeAmm.sol")), "invalid impact"),
             (report({"check": "test", "impact": "Medium", "elements": [{}]}), "invalid source_mapping"),

@@ -58,6 +58,28 @@ class SyncLabMirrorTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn("labs/lab-03-flash-loan/src/Obsolete.sol", result.stdout)
 
+    def test_update_removes_obsolete_and_preserves_valid_mirrors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            for name in ("scripts", "src", "test", "labs"):
+                shutil.copytree(ROOT / name, scratch / name)
+            obsolete = scratch / "labs/lab-03-flash-loan/src/Obsolete.sol"
+            obsolete.write_text("// stale mirror\n")
+            valid = scratch / MIRROR.relative_to(ROOT)
+            original = valid.read_bytes()
+            anchor = scratch / "valid-mirror-anchor"
+            anchor.hardlink_to(valid)
+            self.assertEqual(run_check(scratch).returncode, 1)
+            result = subprocess.run(
+                [sys.executable, str(scratch / "scripts" / SCRIPT.name)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(obsolete.exists())
+            self.assertEqual(valid.read_bytes(), original)
+            self.assertTrue(valid.samefile(anchor), "valid mirror was removed and recreated")
+            self.assertEqual(run_check(scratch).returncode, 0)
+
     def assert_sync_check_detects_drift(self, path: Path, label: str):
         result = run_check()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
