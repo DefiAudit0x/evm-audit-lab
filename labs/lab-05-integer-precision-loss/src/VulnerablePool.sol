@@ -6,7 +6,7 @@ pragma solidity ^0.8.24;
 /// @dev DO NOT DEPLOY. Share minting uses floor division without any
 ///      inflation protection. An attacker who deposits first can inflate
 ///      `totalAssets` with a donation so the next depositor mints zero
-///      shares, then redeem a single share for the entire pool balance.
+///      shares, then redeem a single share for all accounted assets.
 contract VulnerablePool {
     uint256 public totalShares;
     uint256 public totalAssets;
@@ -31,9 +31,12 @@ contract VulnerablePool {
         emit Deposited(msg.sender, msg.value, minted);
     }
 
-    /// @notice Donate ETH without receiving shares — models any value
-    ///         entering the pool outside `deposit` (donation, selfdestruct,
-    ///         a misrouted transfer, ...).
+    /// @notice Donate ETH without receiving shares and increase `totalAssets`.
+    /// @dev Outside `deposit()`, only `donate()` increases `totalAssets`.
+    ///      Forced ETH (e.g. via selfdestruct) does not inflate the share price:
+    ///      it is never counted in `totalAssets` and is permanently locked,
+    ///      with no way for anyone to withdraw it. Plain transfers revert
+    ///      because the pool has neither receive nor fallback.
     function donate() external payable {
         require(msg.value > 0, "zero amount");
         totalAssets += msg.value;

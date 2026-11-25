@@ -6,7 +6,8 @@ pragma solidity ^0.8.24;
 /// @dev Dead shares increase the donation needed for the tested first-deposit
 ///      attack, but do not cap the first depositor's ownership when that
 ///      depositor contributes much more than DEAD_SHARES. This model does not
-///      guarantee every donation strategy is unprofitable.
+///      guarantee every donation strategy is unprofitable. The first deposit
+///      must exceed 1000 wei so redeeming all its shares returns at least 1 wei.
 contract SafePool {
     /// @dev Minted to address(0) on the first deposit. Dilutes any attempt
     ///      to buy an outsized fraction of `totalShares` with a tiny deposit.
@@ -24,6 +25,7 @@ contract SafePool {
 
         uint256 minted;
         if (totalShares == 0) {
+            require(msg.value > 1000, "first deposit too small");
             // First deposit: seed a fixed dead-share amount. A sufficiently
             // large deposit can still own approximately all live shares.
             totalShares += DEAD_SHARES;
@@ -41,6 +43,12 @@ contract SafePool {
         emit Deposited(msg.sender, msg.value, minted);
     }
 
+    /// @notice Donate ETH without receiving shares and increase `totalAssets`.
+    /// @dev Outside `deposit()`, only `donate()` increases `totalAssets`.
+    ///      Forced ETH (e.g. via selfdestruct) does not inflate the share price:
+    ///      it is never counted in `totalAssets` and is permanently locked,
+    ///      with no way for anyone to withdraw it. Plain transfers revert
+    ///      because the pool has neither receive nor fallback.
     function donate() external payable {
         require(msg.value > 0, "zero amount");
         totalAssets += msg.value;

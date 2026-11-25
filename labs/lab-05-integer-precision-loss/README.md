@@ -39,9 +39,16 @@ attacker.withdraw(1 share)
 ```
 
 The core primitive is **rounding, not overflow**: `solc ^0.8` prevents
-overflows by default, yet the truncation is still exploitable. Any value
-that reaches the pool outside `deposit()` (a donation, `selfdestruct`, a
-misrouted transfer) is attacker ammunition.
+overflows by default, yet the truncation is still exploitable. Outside
+`deposit()`, only `donate()` increases the stored `totalAssets` counter and
+inflates the share price. Both pools price shares using `totalAssets`, never
+`address(this).balance`. Forced ETH via `selfdestruct` does not inflate the
+price. Plain transfers revert because neither pool has `receive` or `fallback`.
+
+In both pools, ETH that arrives outside `deposit()` / `donate()` (for example
+via `selfdestruct`) is permanently locked: it is never counted in `totalAssets`
+and can never be withdrawn by anyone. Neither pool has a rescue function;
+`SafePool` addresses the precision defect without adding recovery behavior.
 
 ## Minimal reproduction
 
@@ -61,7 +68,12 @@ Several independent defenses; `SafePool.sol` rejects zero-share deposits and
 seeds a fixed dead-share amount:
 
 1. **Fixed dead shares on first deposit** — `SafePool` mints 1,000,000
-   shares to `address(0)` when the pool is empty. In the tested 1-wei seed,
+   shares to `address(0)` on the first deposit, which must be at least 1001 wei
+   (`msg.value > 1000`). Smaller positive first deposits revert with
+   `"first deposit too small"`: full redemption is `m² / (m + 1,000,000)`,
+   floored, so 1000 wei would redeem zero while 1001 wei redeems 1 wei.
+   Subsequent deposits have no such minimum but must mint positive shares.
+   In the tested 1001-wei seed,
    10-ETH donation, and 5-ETH victim sequence, this leaves the victim with
    positive shares and limits their redemption shortfall to 0.1%. A large
    first deposit can still own nearly all live shares, and fixed dead shares
@@ -86,7 +98,12 @@ forge test --match-contract PrecisionTest --match-test testSafePoolResistsInflat
 ```
 
 `testSafePoolResistsInflation` proves the selected attack sequence leaves
-the victim with shares and redemption within 0.1% of the deposit. The
+the victim with shares and redemption within 0.1% of the deposit. Boundary
+tests reject first deposits of 1 and 1000 wei and redeem 1 wei from a
+1001-wei first deposit. `testSafePoolRejectsZeroShareDeposit` checks a 1-wei
+subsequent deposit after that minimum seed and a 10-ETH donation reverts with
+`"zero shares"`. `testForcedEtherDoesNotInflateSharePrice` verifies that 10 ETH
+forced in after a 1-wei seed leaves a 5-ETH deposit minting 5 ETH shares. The
 additional `testLargeFirstDepositorCanStillOwnNearlyAllLiveShares` shows
 that a 1-ETH first depositor owns over 99% of live shares despite the fixed
 dead-share amount.

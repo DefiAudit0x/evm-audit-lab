@@ -5,6 +5,13 @@ import {Test} from "forge-std/Test.sol";
 import {VulnerablePool} from "../src/VulnerablePool.sol";
 import {SafePool} from "../src/SafePool.sol";
 
+// Created and destroyed in one transaction to force ETH without a pool call.
+contract ForcedPoolEther {
+    constructor(address payable pool) payable {
+        selfdestruct(pool);
+    }
+}
+
 /// @title Precision.t.sol
 /// @notice Lab 05 — Exploit + regression test for share-price rounding.
 ///
@@ -32,13 +39,13 @@ import {SafePool} from "../src/SafePool.sol";
 ///
 /// Remediation:
 ///   SafePool mints a fixed DEAD_SHARES amount to address(0) on the first
-///   deposit and rejects zero-share deposits. This increases the donation
-///   required by the small-seed test below, but does not prevent a large
+///   deposit (minimum 1001 wei) and rejects zero-share deposits. This increases
+///   the donation required by the small-seed test below, but does not prevent a large
 ///   first depositor from owning almost all live shares or guarantee every
 ///   donation attack is unprofitable.
 ///
 /// Regression test:
-///   The selected 1-wei seed / 10-ETH donation / 5-ETH victim sequence leaves
+///   The selected 1001-wei seed / 10-ETH donation / 5-ETH victim sequence leaves
 ///   the victim with positive shares and recovers their deposit within 0.1%.
 ///   A separate test shows that a 1-ETH first depositor still owns over 99%
 ///   of live shares despite the fixed dead-share amount.
@@ -79,10 +86,10 @@ contract PrecisionTest is Test {
     }
 
     function testSafePoolResistsInflation() public {
-        deal(address(this), DONATION + 1);
+        deal(address(this), DONATION + 1001);
 
-        // Same attack sequence against the remediated pool.
-        safe.deposit{value: 1}();
+        // Use the minimum permitted seed against the remediated pool.
+        safe.deposit{value: 1001}();
         safe.donate{value: DONATION}();
 
         address victim = makeAddr("victim");
@@ -95,7 +102,7 @@ contract PrecisionTest is Test {
 
         // The attacker cannot recover the donation — the attack is a net loss.
         safe.withdraw(safe.shares(address(this)));
-        assertLt(address(this).balance, DONATION + 1, "inflation must be unprofitable");
+        assertLt(address(this).balance, DONATION + 1001, "inflation must be unprofitable");
 
         // The victim recovers their deposit minus only rounding dust and
         // the dust the attacker extracted (about 0.0001% here).
@@ -103,6 +110,47 @@ contract PrecisionTest is Test {
         vm.prank(victim);
         uint256 redeemed = safe.withdraw(victimShares);
         assertGe(redeemed, VICTIM_DEPOSIT - VICTIM_DEPOSIT / 1000, "victim must recover their deposit");
+    }
+
+    function testSafePoolRejectsOneWeiFirstDeposit() public {
+        deal(address(this), 1);
+        vm.expectRevert("first deposit too small");
+        safe.deposit{value: 1}();
+    }
+
+    function testSafePoolRejects1000WeiFirstDeposit() public {
+        deal(address(this), 1000);
+        vm.expectRevert("first deposit too small");
+        safe.deposit{value: 1000}();
+    }
+
+    function testSafePoolMinimumFirstDepositRedeemsOneWei() public {
+        deal(address(this), 1001);
+        safe.deposit{value: 1001}();
+        assertEq(safe.withdraw(safe.shares(address(this))), 1, "minimum seed must redeem 1 wei");
+    }
+
+    function testSafePoolRejectsZeroShareDeposit() public {
+        deal(address(this), DONATION + 1002);
+        safe.deposit{value: 1001}();
+        safe.donate{value: DONATION}();
+
+        // This is a subsequent deposit: it must reach the zero-share guard.
+        vm.expectRevert("zero shares");
+        safe.deposit{value: 1}();
+    }
+
+    function testForcedEtherDoesNotInflateSharePrice() public {
+        deal(address(this), DONATION + VICTIM_DEPOSIT + 1);
+        vulnerable.deposit{value: 1}();
+        new ForcedPoolEther{value: DONATION}(payable(address(vulnerable)));
+        assertEq(vulnerable.totalAssets(), 1, "forced ETH must remain unaccounted");
+
+        address depositor = makeAddr("depositor");
+        deal(depositor, VICTIM_DEPOSIT);
+        vm.prank(depositor);
+        vulnerable.deposit{value: VICTIM_DEPOSIT}();
+        assertEq(vulnerable.shares(depositor), VICTIM_DEPOSIT, "forced ETH must preserve 1:1 minting");
     }
 
     function testLargeFirstDepositorCanStillOwnNearlyAllLiveShares() public {
