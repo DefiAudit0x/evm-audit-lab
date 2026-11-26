@@ -34,7 +34,7 @@ python3 -B -m unittest discover -s .github/scripts
 python3 -B -m audit.detectors --root .
 ```
 
-The same checks run automatically in GitHub Actions through `.github/workflows/test.yml`.
+The Foundry tests, the formatting check, and the Python suite (`tests/`) run automatically in GitHub Actions through `.github/workflows/test.yml`. The audit-report tests run in `.github/workflows/slither.yml`; the full scripts suite and the detector run are local-only.
 
 ## Review and verification
 
@@ -46,7 +46,7 @@ Current status on `main` (verified 2026-11-26):
 - Python suites: 192 tests, plus 39 script tests
 - Custom detectors (`audit/detectors`): 19 findings, 0 on `Safe*` contracts
 - Slither gate: PASS on a 117-result scan — 11 written triage entries, all false positives (see `docs/slither-triage.md`), expiring 2027-05-21
-- Weekly invariant profile: runs every Monday 03:23 UTC and on demand (`workflow_dispatch`), with the scheduled profile (fuzz 2048 runs, invariant 256 calls, depth 96); first run 2026-11-26
+- Weekly invariant profile: runs every Monday 03:23 UTC and on demand (`workflow_dispatch`), with the scheduled profile (fuzz 2048 runs; invariant 256 runs, 96 calls per run); first run 2026-11-26
 
 ## What this demonstrates
 
