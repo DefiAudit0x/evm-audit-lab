@@ -1,4 +1,4 @@
-"""Regression cases for PR #6 detector review (Fixes 161–172)."""
+"""Regression cases for PR #6 detector review and Round 9 observations."""
 from pathlib import Path
 import unittest
 
@@ -344,3 +344,30 @@ class Fix172Tests(unittest.TestCase):
 
     def test_require_false_does_not_terminate_prefix_credit(self):
         self.check_prefix_credit('require(minted > 0);', 'require(false);', 1)
+
+
+class Fix175Tests(unittest.TestCase):
+    def test_conditional_post_join_read_does_not_validate_prefix_credit(self):
+        # A conditional read is not a reverting guard: zero skips its body
+        # after the prefix balance credit has already accepted that zero.
+        # Both scalar names follow the same read-based obligation model.
+        for name in ('minted', 'shares'):
+            body = f'''uint256 {name} = assets * totalShares / totalAssets;
+                balances[msg.sender] += {name};
+                if (assets > 1) {{ totalAssets += assets; }}
+                else {{ totalAssets += 1; }}
+                if ({name} > 0) {{ totalShares += {name}; }}'''
+            with self.subTest(name=name):
+                self.assertEqual(
+                    [finding.title for finding in mint_findings(body)],
+                    ['Share deposit may accept a zero-rounded mint'],
+                )
+                # With assets=1, totalShares=1, totalAssets=2, zero is
+                # credited and neither conditional requires a revert.
+                # Unconditional reverting guards in BOTH arms validate
+                # the unchanged prefix value; the conditional read can
+                # then remain without causing a finding.
+                guarded = body.replace(
+                    'totalAssets += assets;', f'require({name} > 0);',
+                ).replace('totalAssets += 1;', f'require({name} > 0);')
+                self.assertEqual(mint_findings(guarded), [])
