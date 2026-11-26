@@ -38,12 +38,12 @@ The Foundry tests, the formatting check, and the Python suite (`tests/`) run aut
 
 ## Review and verification
 
-This repository has been through two independent blind reviews (November 2026) followed by eight fix rounds (Fixes 1–172), all merged into `main` (PRs #1–#6). The second review found 46 findings (15 Major, 31 Minor) plus 20 improvements; every one was fixed or recorded with evidence. The only item left open by design is a non-discriminating anchor-guard test, kept as a regression guard.
+This repository has been through two independent blind reviews (November 2026) followed by nine fix rounds (Fixes 1–176), all merged into `main` (PRs #1–#8). The second review found 46 findings (15 Major, 31 Minor) plus 20 improvements; every one was fixed or recorded with evidence. The only item left open by design is a non-discriminating anchor-guard test, kept as a regression guard.
 
 Current status on `main` (verified 2026-11-26):
 
 - Foundry: 140/140 tests (19 suites)
-- Python suites: 192 tests, plus 39 script tests
+- Python suites: 193 tests, plus 39 script tests
 - Custom detectors (`audit/detectors`): 19 findings, 0 on `Safe*` contracts
 - Slither gate: PASS on a 117-result scan — 11 written triage entries, all false positives (see `docs/slither-triage.md`), expiring 2027-05-21
 - Weekly invariant profile: runs every Monday 03:23 UTC and on demand (`workflow_dispatch`), with the scheduled profile (fuzz 2048 runs; invariant 256 runs, 96 calls per run); first run 2026-11-26
