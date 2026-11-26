@@ -70,10 +70,19 @@ def _assigned_between(body: str, start: int, end: int, name: str) -> bool:
     window = body[start:end]
     if re.search(rf"\b{re.escape(name)}\s*=(?!=)", window):
         return True
-    if re.search(
-        rf"\([^()]*\b{re.escape(name)}\b[^()]*\)\s*=(?!=)", window
-    ) is not None:
-        return True
+    # A tuple assignment ends its target with ')'. Balance backwards to
+    # its opening '(' so control conditions before the target are excluded.
+    for assignment in re.finditer(r"\)\s*=(?!=)", window):
+        depth = 0
+        for index in range(assignment.start(), -1, -1):
+            if window[index] == ")":
+                depth += 1
+            elif window[index] == "(":
+                depth -= 1
+                if depth == 0:
+                    if re.search(rf"\b{re.escape(name)}\b", window[index:assignment.start()]):
+                        return True
+                    break
     return re.search(
         rf"\b{re.escape(name)}\s*(?:\[[^\]]*\])+\s*(?:=(?!=)|[+\-*/%&|^]=|<<=|>>=)",
         window,

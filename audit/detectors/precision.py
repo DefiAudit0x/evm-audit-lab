@@ -24,61 +24,63 @@ POSITIVE_SHARE = re.compile(r"\b(?:minted|shares)\s*>\s*0")
 
 
 def _top_level_if_else_branches(code: str):
-    """Yield (then_body, else_body_or_None, then_start, else_start_or_None,
-    stmt_end) for top-level `if` statements, with each arm body's absolute
-    start offset in `code` and `stmt_end` the offset just past the whole
-    if/else statement (past the else arm when one exists, else past the
-    then arm).
-
-    Only braced branches are analyzed; an `else if` chain yields
-    else_body None (not analyzed — conservative).
+    """Yield (arms, final_else, final_else_start, stmt_end) for top-level
+    braced if/else chains. Each arm is a (body, absolute_start) pair; a
+    missing final else remains uncovered and is not exhaustive.
     """
+    def parse_chain(start):
+        open_paren = code.find("(", start)
+        if open_paren == -1:
+            return None
+        depth = 0
+        close_paren = None
+        for index in range(open_paren, len(code)):
+            if code[index] == "(":
+                depth += 1
+            elif code[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    close_paren = index
+                    break
+        if close_paren is None:
+            return None
+        cursor = close_paren + 1
+        while cursor < len(code) and code[cursor] in " \t\n":
+            cursor += 1
+        if cursor >= len(code) or code[cursor] != "{":
+            return None
+        then_end = matching_brace(code, cursor)
+        if then_end is None:
+            return None
+        arms = [(code[cursor + 1:then_end], cursor + 1)]
+        stmt_end = then_end + 1
+        cursor = stmt_end
+        while cursor < len(code) and code[cursor] in " \t\n":
+            cursor += 1
+        if not re.match(r"else\b", code[cursor:]):
+            return arms, None, None, stmt_end
+        cursor += 4
+        while cursor < len(code) and code[cursor] in " \t\n":
+            cursor += 1
+        if re.match(r"if\b", code[cursor:]):
+            nested = parse_chain(cursor)
+            if nested is None:
+                return arms, None, None, stmt_end
+            nested_arms, final_else, final_else_start, nested_end = nested
+            return arms + nested_arms, final_else, final_else_start, nested_end
+        if cursor < len(code) and code[cursor] == "{":
+            else_end = matching_brace(code, cursor)
+            if else_end is not None:
+                return arms, code[cursor + 1:else_end], cursor + 1, else_end + 1
+        return arms, None, None, stmt_end
+
     braces = parentheses = 0
     statement_start = True
     for token in re.finditer(r"\w+|[^\s]", code):
         if braces == parentheses == 0 and statement_start and token.group() == "if":
-            open_paren = code.find("(", token.start())
-            if open_paren == -1:
-                continue
-            depth = 0
-            close_paren = None
-            for index in range(open_paren, len(code)):
-                if code[index] == "(":
-                    depth += 1
-                elif code[index] == ")":
-                    depth -= 1
-                    if depth == 0:
-                        close_paren = index
-                        break
-            if close_paren is None:
-                continue
-            cursor = close_paren + 1
-            while cursor < len(code) and code[cursor] in " \t\n":
-                cursor += 1
-            if cursor >= len(code) or code[cursor] != "{":
-                continue
-            then_end = matching_brace(code, cursor)
-            if then_end is None:
-                continue
-            then_body = code[cursor + 1 : then_end]
-            then_start = cursor + 1
-            cursor = then_end + 1
-            while cursor < len(code) and code[cursor] in " \t\n":
-                cursor += 1
-            else_body = None
-            else_start = None
-            stmt_end = then_end + 1
-            if re.match(r"else\b", code[cursor:]):
-                after_else = cursor + 4
-                while after_else < len(code) and code[after_else] in " \t\n":
-                    after_else += 1
-                if after_else < len(code) and code[after_else] == "{":
-                    else_end = matching_brace(code, after_else)
-                    if else_end is not None:
-                        else_body = code[after_else + 1 : else_end]
-                        else_start = after_else + 1
-                        stmt_end = else_end + 1
-            yield then_body, else_body, then_start, else_start, stmt_end
+            parsed = parse_chain(token.start())
+            if parsed is not None:
+                yield parsed
         char = token.group()
         if char == "{":
             braces += 1
@@ -135,8 +137,35 @@ def _written_between(code: str, start: int, end: int, name: str, *, include_inde
         return True
     if re.search(rf"(?:\bdelete\s+|\+\+|--)\s*{escaped}\b", window):
         return True
-    if re.search(rf"\([^()]*\b{escaped}\b[^()]*\)\s*=(?!=)", window):
-        return True
+    # Match a complete tuple LHS by balancing backwards from its closing
+    # parenthesis, including arbitrarily nested tuples.
+    for assignment in re.finditer(r"\)\s*=(?!=)", window):
+        depth = 0
+        for index in range(assignment.start(), -1, -1):
+            if window[index] == ")":
+                depth += 1
+            elif window[index] == "(":
+                depth -= 1
+                if depth == 0:
+                    lhs = window[index:assignment.start() + 1]
+                    # Only scalar tuple targets invalidate a scalar proof.
+                    # A name inside an index or index-call is merely read.
+                    brackets = 0
+                    target_text = []
+                    for char in lhs:
+                        if char == "[":
+                            if brackets == 0:
+                                target_text.append("[]")
+                            brackets += 1
+                        elif char == "]":
+                            brackets -= 1
+                        elif not brackets:
+                            target_text.append(char)
+                    targets = "".join(target_text)
+                    pattern = rf"\b{escaped}\b" if include_indexed else rf"\b{escaped}\s*(?=[,)])"
+                    if re.search(pattern, targets):
+                        return True
+                    break
     if not include_indexed:
         return False
     return re.search(
@@ -147,13 +176,45 @@ def _written_between(code: str, start: int, end: int, name: str, *, include_inde
 
 # A top-level statement that writes `minted`/`shares` outright: plain or
 # compound assignment, `++`/`--` (prefix or postfix), `delete`, or a
-# tuple-assignment LHS element. Indexed writes `name[...] = ...` are not
-# included: they change a balance entry, not the scalar mint value.
+# tuple-assignment LHS element (checked separately below). Indexed writes
+# `name[...] = ...` are not included: they change a balance entry, not the scalar mint value.
 _TOP_LEVEL_WRITE = re.compile(
     r"\s*(?:(?:minted|shares)\s*(?:=(?!=)|[+\-*/%&|^]=|<<=|>>=|\+\+|--)"
     r"|delete\s+(?:minted|shares)\b|(?:\+\+|--)\s*(?:minted|shares)\b"
-    r"|\([^()]*\b(?:minted|shares)\b[^()]*\)\s*=(?!=))"
+    r")"
 )
+
+
+def _positive_guard_in_statement(statement: str, name: str) -> bool:
+    """Recognize a positive-share guard, including an exact boolean ternary."""
+    if any(
+        condition_enforces(condition, re.compile(rf"\b{re.escape(name)}\s*>\s*0"))
+        for condition, _ in top_level_guard_conditions(statement)
+    ):
+        return True
+    if re.fullmatch(
+        rf"\s*require\s*\(\s*{re.escape(name)}\s*>\s*0\s*\?\s*true\s*:\s*false\s*\)\s*;",
+        statement,
+    ):
+        return True
+    return bool(re.match(
+        rf"\s*if\s*\(\s*{re.escape(name)}\s*==\s*0\s*\)\s*"
+        r"(?:\{\s*)?revert\b",
+        statement,
+    ))
+
+
+def _mint_credit_names(statement: str) -> set[str]:
+    """Mint scalars read by a top-level credit assignment (not returns)."""
+    if re.match(r"\s*(?:if|else|for|while)\b", statement):
+        return set()
+    assignment = re.search(r"(?<![=!<>])=(?!=)", statement)
+    if assignment is None:
+        return set()
+    lhs = statement[:assignment.start()]
+    if re.fullmatch(r"\s*(?:(?:uint\d*)\s+)?(?:minted|shares)\s*", lhs):
+        return set()
+    return set(re.findall(r"\b(?:minted|shares)\b(?!\s*\[)", statement[assignment.end():]))
 
 
 def _branch_covers_mint(
@@ -161,34 +222,37 @@ def _branch_covers_mint(
     guard_pairs: list[tuple[str, int]],
     branch_start: int,
     deposit_code: str,
+    required_names: set[str],
+    prefix_credit: set[str] | None = None,
+    overwritten_prefix_credit: set[str] | None = None,
 ) -> bool:
-    """True if a branch guarantees a positive mint on its own path, at the
-    end of the branch: either it holds an enforcing require, or it assigns
-    `minted`/`shares` from a value with a top-level positive require (e.g.
-    `minted = msg.value` with `require(msg.value > 0)`).
-
-    The proof is a state machine over the arm's top-level statements, in
-    order: an enforcing require or a credited guarded copy sets the arm
-    covered; any other top-level write to `minted`/`shares` clears it (a
-    later require re-proves the arm, and a re-copy from the same guarded
-    value is itself a proof point). The assignment must be a plain
-    top-level statement of the arm: an assignment nested in an inner `if`
-    runs only when that branch is taken, so it neither proves the arm nor
-    clears it (recorded limitation, same path-insensitivity family as
-    H1/H2). A guarded copy counts only if the guard stating `X > 0`
-    precedes the copy and `X` is not rewritten between the guard and the
-    copy."""
-    covered = False
-    for statement, stmt_start in _top_level_statements(branch):
-        if any(
-            condition_enforces(condition, POSITIVE_SHARE)
-            for condition, _ in top_level_guard_conditions(statement)
-        ):
-            covered = True
+    """True when an arm guarantees a positive mint at its end."""
+    statements = list(_top_level_statements(branch))
+    # A final unconditional revert rolls back every credit on this path.
+    if statements and re.fullmatch(r"\s*revert(?:\s*\(.*\)|\s+(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*\s*\(.*\))\s*;\s*", statements[-1][0], re.DOTALL):
+        return True
+    covered: set[str] = set()
+    # A reverting guard can validate an earlier credit only until its scalar changes.
+    uncovered_credit = set(prefix_credit or ())
+    overwritten_credit = set(overwritten_prefix_credit or ())
+    for statement, stmt_start in statements:
+        uncovered_credit.update(_mint_credit_names(statement) - covered)
+        written = {name for name in ("minted", "shares")
+                   if _written_between(statement, 0, len(statement), name, include_indexed=False)}
+        overwritten_credit.update(uncovered_credit & written)
+        proven = {name for name in ("minted", "shares")
+                  if _positive_guard_in_statement(statement, name)}
+        if proven:
+            uncovered_credit.difference_update(proven - overwritten_credit)
+            covered.update(proven)
             continue
-        match = re.fullmatch(r"\s*(?:minted|shares)\s*=\s*([\w.]+)\s*;", statement)
+        match = re.fullmatch(r"\s*(minted|shares)\s*=\s*([\w.]+|\d+)\s*;", statement)
         if match is not None:
-            value = match.group(1)
+            name, value = match.groups()
+            covered.discard(name)
+            if value.isdecimal() and int(value) > 0:
+                covered.add(name)
+                continue
             assign_offset = branch_start + stmt_start + (len(statement) - len(statement.lstrip()))
             pattern = re.compile(rf"{re.escape(value)}\s*(?:>\s*0|>=\s*1)")
             credited = False
@@ -201,12 +265,13 @@ def _branch_covers_mint(
                     continue
                 credited = True
                 break
-            covered = credited
+            if credited:
+                covered.add(name)
             continue
-        if _TOP_LEVEL_WRITE.match(statement):
-            covered = False
-    return covered
-
+        # Writes in a nested conditional are still possible on the arm's
+        # path and therefore invalidate an earlier proof.
+        covered.difference_update(written)
+    return required_names <= covered and not uncovered_credit
 
 def _last_consumer_end(body: str, stmt_end: int) -> int:
     """End offset of the last top-level statement after `stmt_end` that
@@ -228,44 +293,100 @@ def _last_consumer_end(body: str, stmt_end: int) -> int:
             continue
         if not re.search(r"\b(?:minted|shares)\b", statement):
             continue
-        if _TOP_LEVEL_WRITE.match(statement):
+        if _TOP_LEVEL_WRITE.match(statement) or (
+            statement.lstrip().startswith("(")
+            and any(_written_between(statement, 0, len(statement), name, include_indexed=False)
+                    for name in ("minted", "shares"))
+        ):
             continue
         consumer_end = stmt_end_offset
     return consumer_end
 
 
 def _body_has_zero_mint_guard(body: str) -> bool:
-    """True if one function body enforces a positive mint on its own path:
-    a top-level positive-share guard, an exhaustive if/else whose arms both
-    guarantee a positive mint, or an `if (minted == 0) revert` check.
-
-    Guards are checked per body: a guard in `convertToShares` says nothing
-    about a `deposit` that never calls it. The two-arm proof holds only at
-    the share update: a write to `minted`/`shares` after the if/else join
-    invalidates it, but only up to the last statement that consumes the
-    mint value — a write after the share update cannot change the credited
-    amount (the top-level-guard path stays position-insensitive — the
-    recorded H1/H2 limitation). An indexed write such as
-    `shares[msg.sender] += minted` does not invalidate it: it credits a
-    balance with the mint, it does not replace the mint value.
-    """
+    """True when every path to the mint consumer rejects a zero mint."""
     top_guard_pairs = top_level_guard_conditions(body)
-    if any(
-        condition_enforces(condition, POSITIVE_SHARE)
-        for condition, _ in top_guard_pairs
-    ):
+    # A top-level guard is valid only until the last mint consumer; later
+    # scalar writes must not be allowed to erase the proof.
+    consumer_end = _last_consumer_end(body, 0)
+    required_names = set().union(*(_mint_credit_names(stmt)
+                                  for stmt, _ in _top_level_statements(body)))
+    if not required_names:
+        required_names = set(re.findall(r"\b(minted|shares)\s*=(?!=)", body))
+    guarded: set[str] = set()
+    # A reverting guard can validate an earlier credit only until its scalar changes.
+    uncovered_credit: set[str] = set()
+    overwritten_credit: set[str] = set()
+    prefix_credit_states = {}
+    for statement, stmt_start in _top_level_statements(body):
+        prefix_credit_states[stmt_start + len(statement)] = (
+            uncovered_credit.copy(), overwritten_credit.copy(),
+        )
+        if stmt_start >= consumer_end:
+            continue
+        uncovered_credit.update(_mint_credit_names(statement) - guarded)
+        written = {name for name in ("minted", "shares")
+                   if _written_between(statement, 0, len(statement), name, include_indexed=False)}
+        overwritten_credit.update(uncovered_credit & written)
+        proven = {name for name in ("minted", "shares")
+                  if _positive_guard_in_statement(statement, name)}
+        if proven:
+            uncovered_credit.difference_update(proven - overwritten_credit)
+            guarded.update(proven)
+            continue
+        constant = re.fullmatch(r"\s*(minted|shares)\s*=\s*(\d+)\s*;", statement)
+        if constant is not None:
+            name, value = constant.groups()
+            guarded.discard(name)
+            if int(value) > 0:
+                guarded.add(name)
+            continue
+        guarded.difference_update(written)
+    if required_names <= guarded and not uncovered_credit:
         return True
-    # An `if/else` is exhaustive: it guards the mint only if BOTH branches
-    # guarantee a positive mint on their own path (an enforcing require, or
-    # an assignment from a value with a top-level positive require). A bare
-    # `if` never counts.
-    for then_body, else_body, then_start, else_start, stmt_end in _top_level_if_else_branches(body):
+    # An if/else is exhaustive only when both arms prove a positive mint.
+    for arms, else_body, else_start, stmt_end in _top_level_if_else_branches(body):
         if else_body is None:
             continue
-        if not (
-            _branch_covers_mint(then_body, top_guard_pairs, then_start, body)
-            and _branch_covers_mint(else_body, top_guard_pairs, else_start, body)
-        ):
+        post_join_required = set().union(*(
+            _mint_credit_names(statement)
+            for statement, stmt_start in _top_level_statements(body)
+            if stmt_start >= stmt_end and stmt_start < consumer_end
+        ))
+        post_join_guarded: set[str] = set()
+        for statement, stmt_start in _top_level_statements(body):
+            if stmt_start < stmt_end or stmt_start >= consumer_end:
+                continue
+            post_join_guarded.update(
+                name for name in ("minted", "shares")
+                if _positive_guard_in_statement(statement, name)
+            )
+            if not _TOP_LEVEL_WRITE.match(statement):
+                post_join_required.update(
+                    name for name in ("minted", "shares")
+                    if re.search(rf"\b{re.escape(name)}\b(?!\s*\[)", statement)
+                )
+        post_join_required.difference_update(post_join_guarded)
+        # The first arm ends the top-level `if` statement. Preserve the
+        # credit state from before that statement, not from after the join.
+        first_body, first_start = arms[0]
+        prefix_credit, overwritten_prefix_credit = prefix_credit_states.get(
+            first_start + len(first_body) + 1, (set(), set()),
+        )
+        paths = []
+        for arm_body, arm_start in [*arms, (else_body, else_start)]:
+            arm_required = set().union(*(
+                _mint_credit_names(statement)
+                for statement, _ in _top_level_statements(arm_body)
+            ))
+            if not arm_required:
+                arm_required = set(re.findall(r"\b(minted|shares)\s*=(?!=)", arm_body))
+            paths.append(_branch_covers_mint(
+                arm_body, top_guard_pairs, arm_start, body,
+                arm_required | post_join_required | prefix_credit,
+                prefix_credit, overwritten_prefix_credit,
+            ))
+        if not all(paths):
             continue
         consumer_end = _last_consumer_end(body, stmt_end)
         if _written_between(body, stmt_end, consumer_end, "minted", include_indexed=False):
@@ -273,11 +394,10 @@ def _body_has_zero_mint_guard(body: str) -> bool:
         if _written_between(body, stmt_end, consumer_end, "shares", include_indexed=False):
             continue
         return True
-    return bool(re.search(
-        r"\bif\s*\(\s*(?:minted|shares)\s*==\s*0\s*\)\s*\{?\s*revert\b",
-        body,
-    ))
-
+    # `if (minted == 0) revert` is path-sensitive only when it is the
+    # top-level statement that reaches the mint; nested conditional guards
+    # do not cover the alternate path.
+    return False
 
 def detect_source(root: Path, source_path: Path, source: str) -> list[Finding]:
     findings = []

@@ -120,9 +120,10 @@ class DetectorTests(unittest.TestCase):
         )
         if result.returncode:
             raise RuntimeError(result.stderr or result.stdout)
+        cls.findings_records = json.loads(result.stdout)["findings"]
         cls.findings = {
             (item["detector"], item["file"], item["contract"])
-            for item in json.loads(result.stdout)["findings"]
+            for item in cls.findings_records
         }
         # Title-aware reduction (Imp 17): the 3-tuple above lets one
         # warning mask a missing warning from the same detector, so
@@ -130,7 +131,7 @@ class DetectorTests(unittest.TestCase):
         # the 3-tuple: "no finding of this detector on this contract".
         cls.findings_detailed = {
             (item["detector"], item["file"], item["contract"], item["title"])
-            for item in json.loads(result.stdout)["findings"]
+            for item in cls.findings_records
         }
 
     def assert_finding(self, detector, file, contract, title):
@@ -146,6 +147,22 @@ class DetectorTests(unittest.TestCase):
             "VulnerableVault",
             "External interaction precedes state effects (cross-function reentrancy)",
         )
+
+    def test_reentrancy_vulnerable_amm_keeps_both_same_title_findings(self):
+        detailed = [
+            item for item in self.findings_records
+            if item["detector"] == "reentrancy"
+            and item["file"] == "src/VulnerableAmm.sol"
+            and item["contract"] == "VulnerableAmm"
+        ]
+        self.assertEqual(len(detailed), 2)
+        source = (ROOT / "src/VulnerableAmm.sol").read_text()
+        expected_lines = {
+            source.count("\n", 0, source.index("function swap")) + 1,
+            source.count("\n", 0, source.index("function addLiquidity")) + 1,
+        }
+        actual_lines = {item["line"] for item in detailed}
+        self.assertEqual(actual_lines, expected_lines)
 
     def test_reentrancy_ignores_safe_vault(self):
         self.assertNotIn(("reentrancy", "src/SafeVault.sol", "SafeVault"), self.findings)
@@ -550,6 +567,26 @@ class DetectorTests(unittest.TestCase):
         """
         self.assertEqual(precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source), [])
 
+    def test_precision_accepts_exhaustive_else_if_chain(self):
+        source = """
+        contract SyntheticPool {
+            uint256 totalShares;
+            function deposit(uint256 assets, bool bootstrap, bool special) external {
+                uint256 minted;
+                if (bootstrap) {
+                    minted = 1;
+                } else if (special) {
+                    minted = 1;
+                } else {
+                    minted = assets * totalShares / 1;
+                    require(minted > 0);
+                }
+                totalShares += minted;
+            }
+        }
+        """
+        self.assertEqual(precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source), [])
+
     def test_precision_flags_if_else_with_uncovered_branch(self):
         # The else branch's require does not cover the if branch, which
         # assigns minted from an amount with no positive require.
@@ -855,7 +892,7 @@ class DetectorTests(unittest.TestCase):
             'require(minted > 0 && totalAssets > 0, "zero shares");',
             "assert(minted > 0 && totalShares > 0);",
             'require((minted > 0), "zero shares");',
-            "assert((shares > 0));",
+            "assert((minted > 0));",
             # Doubly parenthesised comparisons still enforce.
             'require(((minted > 0)), "zero shares");',
             # `== true` preserves the guard (the wrapper rule).
@@ -875,6 +912,104 @@ class DetectorTests(unittest.TestCase):
         ):
             with self.subTest(guard=guard):
                 self.assertEqual(self._positive_share_guard_findings(guard), [])
+
+    def test_precision_nested_tuple_write_clears_branch_proof(self):
+        for target in ("((minted, x), y)", "(x, (y, minted))", "(((minted, x), y), z)"):
+            with self.subTest(target=target):
+                source = """
+                contract Pool {
+                    uint256 totalShares;
+                    function deposit(uint256 assets, bool seed) external {
+                        require(assets > 0);
+                        uint256 minted;
+                        if (seed) { minted = assets; }
+                        else { minted = assets * totalShares / 1; require(minted > 0); }
+                        WRITE;
+                        totalShares += minted;
+                    }
+                }
+                """
+                guarded = source.replace("WRITE", "")
+                self.assertEqual(precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), guarded), [])
+                findings = precision.detect_source(
+                    ROOT, Path("src/SyntheticPool.sol"), source.replace("WRITE", target + " = values()")
+                )
+                self.assertEqual(len(findings), 1)
+                self.assertIn("zero-rounded", findings[0].title)
+
+    def test_precision_nested_tuple_reads_are_not_writes(self):
+        for statement in ("consume((minted, x), y);", "return ((minted, x), y);",
+                          "((other, x), y) = values(minted);", "((minted, x), y) == values;"):
+            with self.subTest(statement=statement):
+                self.assertFalse(precision._written_between(
+                    statement, 0, len(statement), "minted", include_indexed=False
+                ))
+
+    def test_precision_flags_covering_guard_followed_by_overwrite(self):
+        source = """
+        contract SyntheticPool {
+            uint256 totalShares;
+            function deposit(uint256 assets) external {
+                uint256 minted = assets * totalShares / 1;
+                require(minted > 0);
+                minted = 0;
+                totalShares += minted;
+            }
+        }
+        """
+        findings = precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
+        self.assertEqual(len(findings), 1)
+
+    def test_precision_flags_nested_conditional_overwrite_in_arm(self):
+        source = """
+        contract SyntheticPool {
+            uint256 totalShares;
+            function deposit(uint256 assets, bool clear) external {
+                require(assets > 0);
+                uint256 minted;
+                if (totalShares == 0) {
+                    minted = assets;
+                    if (clear) { minted = 0; }
+                } else {
+                    minted = assets * totalShares / 1;
+                    require(minted > 0);
+                }
+                totalShares += minted;
+            }
+        }
+        """
+        findings = precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source)
+        self.assertEqual(len(findings), 1)
+
+    def test_precision_zero_guard_is_path_sensitive(self):
+        guarded = """
+        contract SyntheticPool {
+            uint256 totalShares;
+            function deposit(uint256 assets) external {
+                uint256 minted = assets * totalShares / 1;
+                if (minted == 0) revert();
+                totalShares += minted;
+            }
+        }
+        """
+        unguarded = guarded.replace("if (minted == 0) revert();", "if (assets > 0) { if (minted == 0) revert(); }")
+        self.assertEqual(precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), guarded), [])
+        self.assertEqual(len(precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), unguarded)), 1)
+
+    def test_precision_accepts_positive_constant_and_exact_boolean_ternary(self):
+        for guard in ("minted = 1;", "require(minted > 0 ? true : false);"):
+            with self.subTest(guard=guard):
+                source = f"""
+                contract SyntheticPool {{
+                    uint256 totalShares;
+                    function deposit(uint256 assets) external {{
+                        uint256 minted = assets * totalShares / 1;
+                        {guard}
+                        totalShares += minted;
+                    }}
+                }}
+                """
+                self.assertEqual(precision.detect_source(ROOT, Path("src/SyntheticPool.sol"), source), [])
 
     def _positive_share_guard_findings(self, guard):
         source = f"""
@@ -1489,6 +1624,18 @@ class DetectorMinorTests(unittest.TestCase):
         self.assertEqual(layout[1], ("uint256", 100000, 0, (1,)))
         self.assertEqual(detect_storage_collision_source(ROOT, self.path, source), [])
 
+    def test_storage_collision_large_packable_array_uses_exact_span(self):
+        source = """
+        contract LayoutV1 {
+            uint128[5000] packed;
+            uint256 tail;
+        }
+        """
+        contract = next(contract_blocks(self.path, source))
+        layout = _resolved_storage_layout(contract, {contract.name: contract})
+        self.assertEqual(layout[0], (("array", "uint128", "5000"), 0, 0, (0,)))
+        self.assertEqual(layout[1], ("uint256", 2500, 0, (1,)))
+
     def test_storage_collision_nested_array_budget_uses_descriptor(self):
         # A per-dimension cap alone does not bound nested arrays:
         # [1024][1024][1024] would materialize 2^30 leaves. The cumulative
@@ -1778,6 +1925,42 @@ class DetectorMinorTests(unittest.TestCase):
         for detector in (detect_source, proxy_upgrade.detect_source):
             with self.subTest(detector=detector.__module__):
                 self.assertEqual(detector(ROOT, self.path, source), [])
+
+    def test_initializer_flag_nested_tuple_bool_shadows(self):
+        source = """
+        contract Vault {
+            address owner;
+            bool initialized;
+            function initialize(address nextOwner) external {
+                ((bool scratch, bool initialized), uint256 x) = ((false, false), 1);
+                require(!initialized);
+                initialized = true;
+                owner = nextOwner;
+            }
+        }
+        """
+        for detector in (detect_source, proxy_upgrade.detect_source):
+            with self.subTest(detector=detector.__module__):
+                self.assertEqual(len(detector(ROOT, self.path, source)), 1)
+
+    def test_proxy_upgrade_nested_tuple_reassignment_is_detected(self):
+        source = """
+        contract Vault {
+            function upgradeToAndCall(address candidate, bytes calldata data) external {
+                (bool compatible, bytes memory uuid) = candidate.staticcall(abi.encodeCall(this.proxiableUUID, ()));
+                ((compatible, uuid), uint256 marker) = ((true, abi.encode(IMPLEMENTATION_SLOT)), 1);
+                require(compatible);
+                require(abi.decode(uuid, (bytes32)) == IMPLEMENTATION_SLOT);
+            }
+        }
+        """
+        start = source.index("staticcall")
+        end = source.index("require(compatible)")
+        self.assertTrue(proxy_upgrade._assigned_between(source, start, end, "compatible"))
+        self.assertTrue(proxy_upgrade._assigned_between(source, start, end, "uuid"))
+        findings = proxy_upgrade.detect_source(ROOT, self.path, source)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("UUPS proxiableUUID compatibility", findings[0].message)
 
     def test_initializer_flag_for_loop_bool_before_guard_does_not_shadow(self):
         # A `bool` declared as a for-loop initializer is scoped to the loop,

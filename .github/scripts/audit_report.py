@@ -330,12 +330,12 @@ def parse_findings(raw, root):
     results = raw.get("results")
     require(
         isinstance(results, dict)
-        and isinstance(results.get("detectors"), list),
+        and isinstance(results.get("detectors", []), list),
         "results.detectors must be an array",
     )
 
     findings = {}
-    for index, detector in enumerate(results["detectors"]):
+    for index, detector in enumerate(results.get("detectors", [])):
         require(
             isinstance(detector, dict),
             f"detector {index}: expected object",

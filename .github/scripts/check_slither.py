@@ -375,7 +375,7 @@ def read_report(report_path: str) -> tuple[list[SiteFinding], set[str]]:
     if report.get("success") is not True or report.get("error") not in (None, ""):
         raise ValueError(f"analysis did not succeed: {report.get('error')!r}")
     results = report.get("results")
-    if not isinstance(results, dict) or not isinstance(results.get("detectors"), list):
+    if not isinstance(results, dict) or not isinstance(results.get("detectors", []), list):
         raise ValueError("results.detectors must be a list")
 
     compilations = results.get("compilations")
@@ -398,7 +398,7 @@ def read_report(report_path: str) -> tuple[list[SiteFinding], set[str]]:
                     scanned_sources.add(relative)
 
     sites: dict[tuple[str, str, int | None, int | None], str] = {}
-    for index, det in enumerate(results["detectors"]):
+    for index, det in enumerate(results.get("detectors", [])):
         if not isinstance(det, dict):
             raise ValueError(f"detector {index} must be an object")
         check, impact = det.get("check"), det.get("impact")

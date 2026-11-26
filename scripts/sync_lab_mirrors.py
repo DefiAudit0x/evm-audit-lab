@@ -44,12 +44,14 @@ def sync(check: bool) -> int:
     failures: list[str] = []
     for lab in sorted(p for p in LABS.glob("lab-*") if p.is_dir()):
         expected = {mirror for _, mirror in expected_files(lab)}
-        if check:
-            for tree in (lab / "src", lab / "test"):
-                if tree.exists():
-                    for mirror in tree.rglob("*"):
-                        if mirror.is_file() and mirror not in expected:
+        for tree in (lab / "src", lab / "test"):
+            if tree.exists():
+                for mirror in tree.rglob("*"):
+                    if mirror.is_file() and mirror not in expected:
+                        if check:
                             failures.append(str(mirror.relative_to(ROOT)))
+                        else:
+                            mirror.unlink()
         for source, mirror in expected_files(lab):
             if not source.is_file():
                 failures.append(f"{lab.name}: canonical file missing: {source.relative_to(ROOT)}")

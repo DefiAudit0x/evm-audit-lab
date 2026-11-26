@@ -8,6 +8,7 @@ on:
 
   schedule:
     - cron: "23 3 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,7 +33,7 @@ jobs:
           python-version-file: .python-version
       - name: Run tests
         env:
-          FOUNDRY_PROFILE: ${{ github.event_name == 'schedule' && 'scheduled' || 'default' }}
+          FOUNDRY_PROFILE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'scheduled' || 'default' }}
         run: |
           forge test -vv
           # Keep the repository config and forge-std remapping for each mirror.
