@@ -29,9 +29,24 @@ Tests are reproducible:
 ```bash
 forge test -vv
 forge fmt --check
+python3 -B -m unittest discover -s tests
+python3 -B -m unittest discover -s .github/scripts
+python3 -B -m audit.detectors --root .
 ```
 
-The same checks run automatically in GitHub Actions through `.github/workflows/test.yml`.
+The Foundry tests, the formatting check, and the Python suite (`tests/`) run automatically in GitHub Actions through `.github/workflows/test.yml`. The audit-report tests run in `.github/workflows/slither.yml`; the full scripts suite and the detector run are local-only.
+
+## Review and verification
+
+This repository has been through two independent blind reviews (November 2026) followed by eight fix rounds (Fixes 1–172), all merged into `main` (PRs #1–#6). The second review found 46 findings (15 Major, 31 Minor) plus 20 improvements; every one was fixed or recorded with evidence. The only item left open by design is a non-discriminating anchor-guard test, kept as a regression guard.
+
+Current status on `main` (verified 2026-11-26):
+
+- Foundry: 140/140 tests (19 suites)
+- Python suites: 192 tests, plus 39 script tests
+- Custom detectors (`audit/detectors`): 19 findings, 0 on `Safe*` contracts
+- Slither gate: PASS on a 117-result scan — 11 written triage entries, all false positives (see `docs/slither-triage.md`), expiring 2027-05-21
+- Weekly invariant profile: runs every Monday 03:23 UTC and on demand (`workflow_dispatch`), with the scheduled profile (fuzz 2048 runs; invariant 256 runs, 96 calls per run); first run 2026-11-26
 
 ## What this demonstrates
 
@@ -172,7 +187,7 @@ The core lessons for flash-loan and stale-oracle manipulation, rounding inflatio
 | 6 additional labs | Precision, MEV, Proxy, Signatures, ACL, Low-level calls | ✅ Done |
 | 4 companion labs | 4626 inflation, Loop DoS, Fee-on-transfer, UUPS initializer | ✅ Done |
 | Slither integration | CI with detection assertions, safe-regression gate and written triage | ✅ Done |
-| Invariant fuzzing | Echidna / `forge invariant` for each lab | 📋 2026 Q4 |
+| Invariant fuzzing | Echidna / `forge invariant` for each lab | 🔄 Scheduled Foundry profile live in CI since 2026-11-26 (weekly + on-demand); per-lab Echidna suites still to come |
 | Blog writeups | Each lab paired with a public write-up | 📋 2027 Q1 |
 
 ## Contributing
