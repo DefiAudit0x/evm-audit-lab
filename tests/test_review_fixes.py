@@ -1,4 +1,4 @@
-"""Regression cases for PR #6 detector review (Fixes 161–170)."""
+"""Regression cases for PR #6 detector review (Fixes 161–172)."""
 from pathlib import Path
 import unittest
 
@@ -271,3 +271,76 @@ class Fix170Tests(unittest.TestCase):
             if (assets > 1) { require(minted > 0); }
             else { require(minted > 0); }'''
         self.assertEqual(len(mint_findings(body)), 1)
+
+
+class Fix171Tests(unittest.TestCase):
+    def test_post_join_guard_discharges_its_scalar_obligation(self):
+        body = '''uint256 shares = assets * totalShares / totalAssets;
+            uint256 minted;
+            if (totalShares == 0) { minted = 1; }
+            else { minted = 2; }
+            require(shares > 0);
+            balances[msg.sender] += minted;
+            return minted;'''
+        self.assertEqual(mint_findings(body), [])
+
+    def test_unguarded_post_join_return_still_requires_arm_proof(self):
+        body = '''uint256 minted = assets * totalShares / totalAssets;
+            if (totalShares == 0) { minted = 1; }
+            else { totalAssets += assets; }
+            return minted;'''
+        self.assertEqual(len(mint_findings(body)), 1)
+
+    def test_post_join_guard_does_not_discharge_another_scalar(self):
+        body = '''uint256 minted = assets * totalShares / totalAssets;
+            uint256 shares = assets;
+            if (totalShares == 0) { minted = 1; }
+            else { totalAssets += assets; }
+            require(shares > 0);
+            return minted;'''
+        self.assertEqual(len(mint_findings(body)), 1)
+
+
+class Fix172Tests(unittest.TestCase):
+    def check_prefix_credit(self, then_body, else_body, expected):
+        body = f'''uint256 minted = assets * totalShares / totalAssets;
+            balances[msg.sender] += minted;
+            if (assets > 1) {{ {then_body} }}
+            else {{ {else_body} }}'''
+        self.assertEqual(len(mint_findings(body)), expected)
+
+    def test_final_revert_terminates_prefix_credit(self):
+        for revert in ('revert();', 'revert("zero mint");', 'revert(failureCode());'):
+            for reverting_then in (False, True):
+                with self.subTest(revert=revert, reverting_then=reverting_then):
+                    guard = 'require(minted > 0);'
+                    self.check_prefix_credit(
+                        revert if reverting_then else guard,
+                        guard if reverting_then else revert, 0)
+
+    def test_final_custom_error_revert_terminates_prefix_credit(self):
+        self.check_prefix_credit('require(minted > 0);', 'revert ZeroMint();', 0)
+
+    def test_final_custom_error_revert_with_argument_terminates_prefix_credit(self):
+        self.check_prefix_credit('require(minted > 0);', 'revert ZeroMint(assets);', 0)
+
+    def test_final_revert_prefixed_call_does_not_terminate_prefix_credit(self):
+        self.check_prefix_credit('require(minted > 0);', 'revertTokens();', 1)
+
+    def test_final_qualified_custom_error_revert_terminates_prefix_credit(self):
+        self.check_prefix_credit('require(minted > 0);', 'revert Pool.ZeroMint();', 0)
+
+    def test_unrelated_arms_still_leave_prefix_credit_unvalidated(self):
+        self.check_prefix_credit('totalAssets += assets;', 'totalAssets += 1;', 1)
+
+    def test_conditional_revert_does_not_terminate_prefix_credit(self):
+        self.check_prefix_credit('require(minted > 0);', 'if (assets == 0) { revert(); }', 1)
+
+    def test_one_guard_and_continuing_arm_leave_prefix_credit_unvalidated(self):
+        self.check_prefix_credit('require(minted > 0);', 'totalAssets += assets;', 1)
+
+    def test_revert_followed_by_executable_statement_does_not_terminate(self):
+        self.check_prefix_credit('require(minted > 0);', 'revert(); totalAssets += assets;', 1)
+
+    def test_require_false_does_not_terminate_prefix_credit(self):
+        self.check_prefix_credit('require(minted > 0);', 'require(false);', 1)

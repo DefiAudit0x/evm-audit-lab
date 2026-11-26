@@ -227,11 +227,15 @@ def _branch_covers_mint(
     overwritten_prefix_credit: set[str] | None = None,
 ) -> bool:
     """True when an arm guarantees a positive mint at its end."""
+    statements = list(_top_level_statements(branch))
+    # A final unconditional revert rolls back every credit on this path.
+    if statements and re.fullmatch(r"\s*revert(?:\s*\(.*\)|\s+(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*\s*\(.*\))\s*;\s*", statements[-1][0], re.DOTALL):
+        return True
     covered: set[str] = set()
     # A reverting guard can validate an earlier credit only until its scalar changes.
     uncovered_credit = set(prefix_credit or ())
     overwritten_credit = set(overwritten_prefix_credit or ())
-    for statement, stmt_start in _top_level_statements(branch):
+    for statement, stmt_start in statements:
         uncovered_credit.update(_mint_credit_names(statement) - covered)
         written = {name for name in ("minted", "shares")
                    if _written_between(statement, 0, len(statement), name, include_indexed=False)}
@@ -349,14 +353,20 @@ def _body_has_zero_mint_guard(body: str) -> bool:
             for statement, stmt_start in _top_level_statements(body)
             if stmt_start >= stmt_end and stmt_start < consumer_end
         ))
+        post_join_guarded: set[str] = set()
         for statement, stmt_start in _top_level_statements(body):
             if stmt_start < stmt_end or stmt_start >= consumer_end:
                 continue
+            post_join_guarded.update(
+                name for name in ("minted", "shares")
+                if _positive_guard_in_statement(statement, name)
+            )
             if not _TOP_LEVEL_WRITE.match(statement):
                 post_join_required.update(
                     name for name in ("minted", "shares")
                     if re.search(rf"\b{re.escape(name)}\b(?!\s*\[)", statement)
                 )
+        post_join_required.difference_update(post_join_guarded)
         # The first arm ends the top-level `if` statement. Preserve the
         # credit state from before that statement, not from after the join.
         first_body, first_start = arms[0]
